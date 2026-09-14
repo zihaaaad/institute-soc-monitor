@@ -1,8 +1,36 @@
 {
   "subnets": {
-    "10.13.109.0/24": "Lab 1 (Computer Science)",
-    "10.13.110.0/24": "Lab 2 (Software Engineering)",
-    "10.13.111.0/24": "Lab 3 (Networking & Cyber)"
+    "10.13.100.0/24": "Core Backbone & Gateway Subnet",
+    "10.13.101.0/24": "Administration & Faculty Subnet",
+    "10.13.102.0/24": "Academic Web & Proxy Services",
+    "10.13.103.0/24": "Engineering Lab Cluster 1",
+    "10.13.104.0/24": "Computer Science Lab 1",
+    "10.13.105.0/24": "Software Engineering Lab 1",
+    "10.13.106.0/24": "Data Science & AI Lab",
+    "10.13.107.0/24": "Information Systems Lab",
+    "10.13.108.0/24": "Cyber Security Research Lab",
+    "10.13.109.0/24": "SOC Control Center & Admin LAN",
+    "10.13.110.0/24": "Computer Science Lab 2",
+    "10.13.111.0/24": "Networking & Telecom Lab",
+    "10.13.112.0/24": "Digital Library & E-Learning",
+    "10.13.113.0/24": "Server Farm & Infrastructure",
+    "10.13.114.0/24": "Multimedia & Graphics Lab",
+    "10.13.115.0/24": "IoT & Embedded Systems Lab",
+    "10.13.116.0/24": "Robotics & Automation Lab",
+    "10.13.117.0/24": "Biomedical Informatics Lab",
+    "10.13.118.0/24": "Student Workstation Pool A",
+    "10.13.119.0/24": "Student Workstation Pool B",
+    "10.13.120.0/24": "Graduate Research Wing",
+    "10.13.121.0/24": "Postgraduate Computation Lab",
+    "10.13.122.0/24": "Campus Wireless Subnet 1",
+    "10.13.123.0/24": "Campus Wireless Subnet 2",
+    "10.13.124.0/24": "Guest & BYOD Subnet",
+    "10.13.125.0/24": "VoIP & Communications Subnet",
+    "10.13.126.0/24": "CCTV & Security Surveillance",
+    "10.13.127.0/24": "Facility Management & BMS",
+    "10.13.128.0/24": "Disaster Recovery Subnet",
+    "10.13.129.0/24": "Perimeter DMZ Subnet",
+    "10.13.130.0/24": "External WAN Uplink Subnet"
   },
   "credentials": {
     "windows_user": "",
@@ -10,6 +38,7 @@
   },
   "settings": {
     "scan_interval_seconds": 60,
+    "probe_workers": 60,
     "metrics_port": 8000,
     "prometheus_port": 9090,
     "grafana_port": 3000

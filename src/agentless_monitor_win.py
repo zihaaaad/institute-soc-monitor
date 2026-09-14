@@ -14,6 +14,7 @@ from typing import Dict, List, Any, Set, Tuple
 from prometheus_client import start_http_server, Gauge, Counter
 import pythoncom
 import wmi
+import ctypes
 
 from config_loader import load_config, BASE_DIR
 from oui_database import lookup_mac_vendor
@@ -232,9 +233,47 @@ def audit_vulnerabilities(ip_str: str, open_services: List[str], lab_name: str) 
 
 HOSTNAME_CACHE: Dict[str, str] = {}
 
+def get_mac_sendarp(ip_str: str) -> str:
+    try:
+        inetaddr = ctypes.c_ulong()
+        ctypes.windll.ws2_32.inet_pton(socket.AF_INET, ip_str.encode("utf-8"), ctypes.byref(inetaddr))
+        mac_addr = (ctypes.c_ubyte * 6)()
+        mac_len = ctypes.c_ulong(6)
+        res = ctypes.windll.iphlpapi.SendARP(inetaddr, 0, ctypes.byref(mac_addr), ctypes.byref(mac_len))
+        if res == 0:
+            return ":".join(f"{b:02X}" for b in bytearray(mac_addr))
+    except Exception:
+        pass
+    return ""
+
+def netbios_name_lookup(ip: str) -> str:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.12)
+        req = b'\x80\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00 CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\x00\x00!\x00\x01'
+        s.sendto(req, (ip, 137))
+        data, _ = s.recvfrom(1024)
+        s.close()
+        if len(data) > 57:
+            num_names = data[56]
+            offset = 57
+            for _ in range(num_names):
+                name = data[offset:offset+15].decode("latin-1", errors="ignore").strip()
+                name_type = data[offset+15]
+                offset += 18
+                if name_type == 0x00 and name and not name.startswith("__MSBROWSE__"):
+                    return name
+    except Exception:
+        pass
+    return ""
+
 def resolve_hostname(ip: str) -> str:
     if ip in HOSTNAME_CACHE:
         return HOSTNAME_CACHE[ip]
+    nb = netbios_name_lookup(ip)
+    if nb:
+        HOSTNAME_CACHE[ip] = nb
+        return nb
     try:
         h = socket.gethostbyaddr(ip)[0]
         HOSTNAME_CACHE[ip] = h
@@ -250,10 +289,16 @@ def probe_host(ip_str: str) -> Dict[str, Any]:
     is_up = False
     responding_latencies = []
     
+    # 1. Win32 SendARP check for instant local L2 resolution
+    mac = get_mac_sendarp(ip_str)
+    if mac:
+        is_up = True
+
+    # 2. Probe active TCP services
     for port, service_name in PORT_SERVICE_MAP.items():
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.12)
+                s.settimeout(0.08)
                 p_start = time.time()
                 res = s.connect_ex((ip_str, port))
                 if res == 0:
@@ -275,6 +320,7 @@ def probe_host(ip_str: str) -> Dict[str, Any]:
     return {
         "ip": ip_str,
         "is_up": is_up,
+        "mac": mac,
         "hostname": hostname,
         "latency_ms": round(latency_ms, 2),
         "open_services": open_services
@@ -349,7 +395,7 @@ def sweep_subnet(subnet_range: str, lab_name: str, arp_cache: Dict[str, str]) ->
             ip = r["ip"]
             in_arp = ip in arp_cache
             if r["is_up"] or in_arp:
-                mac = arp_cache.get(ip, "Static/LAN")
+                mac = r.get("mac") or arp_cache.get(ip, "Static/LAN")
                 vendor = lookup_mac_vendor(mac)
                 hostname = r.get("hostname") or resolve_hostname(ip)
                 services_str = ", ".join(r["open_services"]) if r["open_services"] else "ICMP/ARP Only"
@@ -465,9 +511,14 @@ def start_monitoring():
         ACTIVE_LATENCY_LABELS.clear()
         ACTIVE_PORT_LABELS.clear()
         
-        for subnet, lab_name in SUBNET_LAB_MAPPING.items():
-            hosts = sweep_subnet(subnet, lab_name, arp_cache)
-            all_hosts.extend(hosts)
+        def _sweep_worker(item):
+            sub, lab = item
+            return sweep_subnet(sub, lab, arp_cache)
+
+        with ThreadPoolExecutor(max_workers=6) as subnet_pool:
+            results = list(subnet_pool.map(_sweep_worker, SUBNET_LAB_MAPPING.items()))
+            for hosts in results:
+                all_hosts.extend(hosts)
             
         for h in all_hosts:
             if h.get("is_rogue"):
