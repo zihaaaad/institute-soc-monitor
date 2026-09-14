@@ -70,6 +70,7 @@ SUSPICIOUS_LIST = [p.lower() for p in config.get("suspicious_processes", [])]
 
 # Anomaly Detector per subnet
 ANOMALY_DETECTORS: Dict[str, LatencyAnomalyDetector] = {}
+ALERT_LOCK = threading.Lock()
 ALERT_COOLDOWN_MAP: Dict[str, float] = {}
 
 # Monitored Port Services (Attack Surface)
@@ -126,9 +127,11 @@ def dispatch_alert(title: str, message: str, severity: str, target_ip: str, aler
     cooldown_seconds = ALERTS_CONFIG.get("alert_cooldown_seconds", 300)
     key = f"{target_ip}:{alert_type}"
     now = time.time()
-    if key in ALERT_COOLDOWN_MAP and (now - ALERT_COOLDOWN_MAP[key]) < cooldown_seconds:
-        return
-    ALERT_COOLDOWN_MAP[key] = now
+    
+    with ALERT_LOCK:
+        if key in ALERT_COOLDOWN_MAP and (now - ALERT_COOLDOWN_MAP[key]) < cooldown_seconds:
+            return
+        ALERT_COOLDOWN_MAP[key] = now
 
     def _send():
         # 1. Discord Webhook
@@ -209,14 +212,13 @@ def check_smbv1(ip_str: str) -> bool:
             b'\x62\x00'
             b'\x02\x4e\x54\x20\x4c\x4d\x20\x30\x2e\x31\x32\x00'
         )
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.25)
-        s.connect((ip_str, 445))
-        s.sendall(smbv1_packet)
-        response = s.recv(1024)
-        s.close()
-        if len(response) >= 8 and response[4:8] == b'\xffSMB' and response[8] == 0x72:
-            return True
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.25)
+            s.connect((ip_str, 445))
+            s.sendall(smbv1_packet)
+            response = s.recv(1024)
+            if len(response) >= 8 and response[4:8] == b'\xffSMB' and response[8] == 0x72:
+                return True
     except Exception:
         pass
     return False
@@ -265,13 +267,12 @@ def probe_host(ip_str: str) -> Dict[str, Any]:
     
     for port, service_name in PORT_SERVICE_MAP.items():
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(0.10)
-            res = s.connect_ex((ip_str, port))
-            s.close()
-            if res == 0:
-                is_up = True
-                open_services.append(service_name)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.10)
+                res = s.connect_ex((ip_str, port))
+                if res == 0:
+                    is_up = True
+                    open_services.append(service_name)
         except Exception:
             pass
 
@@ -282,6 +283,7 @@ def probe_host(ip_str: str) -> Dict[str, Any]:
         "latency_ms": round(t_latency, 2),
         "open_services": open_services
     }
+
 
 # ---------------------------------------------------------
 # Agentless WMI Security Audit
