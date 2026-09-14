@@ -380,6 +380,15 @@ def sweep_subnet(subnet_range: str, lab_name: str, arp_cache: Dict[str, str]) ->
                     VULNERABILITY_GAUGE.labels(target_ip=ip, cve_id=v["cve_id"], severity=v["severity"], description=v["description"]).set(1)
                     ACTIVE_VULN_LABELS.add((ip, v["cve_id"], v["severity"], v["description"]))
 
+                    mitre_info = MITRE_TECHNIQUES.get(v["cve_id"])
+                    if mitre_info:
+                        tech_id = str(mitre_info.get("technique_id", "N/A"))
+                        tech_name = str(mitre_info.get("technique_name", "Unknown"))
+                        tactic = str(mitre_info.get("tactic", "Security Risk"))
+                        sev = str(mitre_info.get("severity", v["severity"]))
+                        MITRE_ATTACK_GAUGE.labels(target_ip=ip, technique_id=tech_id, technique_name=tech_name, tactic=tactic, severity=sev).set(1)
+                        ACTIVE_MITRE_LABELS.add((ip, tech_id, tech_name, tactic, sev))
+
                 # Compute CVSS 3.1 Quantitative Risk Score
                 risk_score = calculate_endpoint_risk_score(vuln_ids, is_rogue=is_rogue)
                 ENDPOINT_RISK_SCORE.labels(target_ip=ip, hostname=hostname, subnet=subnet_range, lab_name=lab_name).set(risk_score)
@@ -433,6 +442,12 @@ def start_monitoring():
         sys.exit(1)
 
     previous_status_labels: Set[Tuple[str, str, str, str, str, str, str]] = set()
+    previous_mitre_labels: Set[Tuple[str, str, str, str, str]] = set()
+    previous_vuln_labels: Set[Tuple[str, str, str, str]] = set()
+    previous_rogue_labels: Set[Tuple[str, str, str, str]] = set()
+    previous_risk_labels: Set[Tuple[str, str, str, str]] = set()
+    previous_latency_labels: Set[Tuple[str, str, str]] = set()
+    previous_port_labels: Set[Tuple[str, str, str]] = set()
 
     while True:
         t_sweep_start = time.time()
@@ -445,7 +460,10 @@ def start_monitoring():
         ACTIVE_STATUS_LABELS.clear()
         ACTIVE_VULN_LABELS.clear()
         ACTIVE_ROGUE_LABELS.clear()
+        ACTIVE_MITRE_LABELS.clear()
         ACTIVE_RISK_LABELS.clear()
+        ACTIVE_LATENCY_LABELS.clear()
+        ACTIVE_PORT_LABELS.clear()
         
         for subnet, lab_name in SUBNET_LAB_MAPPING.items():
             hosts = sweep_subnet(subnet, lab_name, arp_cache)
@@ -463,6 +481,48 @@ def start_monitoring():
             except KeyError:
                 pass
         previous_status_labels = set(ACTIVE_STATUS_LABELS)
+
+        for old_tuple in previous_mitre_labels - ACTIVE_MITRE_LABELS:
+            try:
+                MITRE_ATTACK_GAUGE.remove(*old_tuple)
+            except KeyError:
+                pass
+        previous_mitre_labels = set(ACTIVE_MITRE_LABELS)
+
+        for old_tuple in previous_vuln_labels - ACTIVE_VULN_LABELS:
+            try:
+                VULNERABILITY_GAUGE.remove(*old_tuple)
+            except KeyError:
+                pass
+        previous_vuln_labels = set(ACTIVE_VULN_LABELS)
+
+        for old_tuple in previous_rogue_labels - ACTIVE_ROGUE_LABELS:
+            try:
+                ROGUE_DEVICE_GAUGE.remove(*old_tuple)
+            except KeyError:
+                pass
+        previous_rogue_labels = set(ACTIVE_ROGUE_LABELS)
+
+        for old_tuple in previous_risk_labels - ACTIVE_RISK_LABELS:
+            try:
+                ENDPOINT_RISK_SCORE.remove(*old_tuple)
+            except KeyError:
+                pass
+        previous_risk_labels = set(ACTIVE_RISK_LABELS)
+
+        for old_tuple in previous_latency_labels - ACTIVE_LATENCY_LABELS:
+            try:
+                ENDPOINT_LATENCY_GAUGE.remove(*old_tuple)
+            except KeyError:
+                pass
+        previous_latency_labels = set(ACTIVE_LATENCY_LABELS)
+
+        for old_tuple in previous_port_labels - ACTIVE_PORT_LABELS:
+            try:
+                ENDPOINT_PORT_EXPOSURE.remove(*old_tuple)
+            except KeyError:
+                pass
+        previous_port_labels = set(ACTIVE_PORT_LABELS)
 
         TOTAL_ENDPOINTS_GAUGE.set(len(all_hosts))
         TOTAL_ROGUE_DEVICES_GAUGE.set(total_rogue)
