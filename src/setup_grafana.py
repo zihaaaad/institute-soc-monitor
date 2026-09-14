@@ -50,6 +50,7 @@ def deploy_dashboard():
             "title": "Institute Cyber Security SOC & Network Monitor",
             "tags": ["soc", "security", "network", "windows-endpoints", "mitre-attack", "threat-intel"],
             "timezone": "browser",
+            "schemaVersion": 39,
             "refresh": "5s",
             "time": {"from": "now-1h", "to": "now"},
             "panels": [
@@ -223,23 +224,17 @@ def deploy_dashboard():
                         {
                             "expr": "max by (target_ip, hostname, subnet, mac, vendor) (endpoint_status)",
                             "instant": True,
-                            "format": "time_series",
+                            "format": "table",
                             "refId": "A"
                         }
                     ],
                     "transformations": [
                         {
-                            "id": "labelsToFields",
-                            "options": {"mode": "columns"}
-                        },
-                        {
                             "id": "organize",
                             "options": {
                                 "excludeByName": {
                                     "Time": True,
-                                    "__name__": True,
-                                    "instance": True,
-                                    "job": True
+                                    "__name__": True
                                 },
                                 "indexByName": {
                                     "target_ip": 0,
@@ -261,7 +256,9 @@ def deploy_dashboard():
                         }
                     ],
                     "options": {
-                        "footer": {"show": True, "countRows": True, "enablePagination": True}
+                        "cellOptions": {"type": "auto"},
+                        "footer": {"show": True, "countRows": True, "enablePagination": True},
+                        "showHeader": True
                     },
                     "fieldConfig": {
                         "defaults": {
@@ -302,12 +299,11 @@ def deploy_dashboard():
                         {
                             "expr": "max by (target_ip, technique_id, technique_name, tactic, severity) (mitre_attack_technique == 1)",
                             "instant": True,
-                            "format": "time_series",
+                            "format": "table",
                             "refId": "A"
                         }
                     ],
                     "transformations": [
-                        {"id": "labelsToFields", "options": {"mode": "columns"}},
                         {
                             "id": "organize",
                             "options": {
@@ -322,7 +318,11 @@ def deploy_dashboard():
                             }
                         }
                     ],
-                    "options": {"footer": {"show": True, "countRows": True}},
+                    "options": {
+                        "cellOptions": {"type": "auto"},
+                        "footer": {"show": True, "countRows": True},
+                        "showHeader": True
+                    },
                     "fieldConfig": {
                         "defaults": {"custom": {"align": "left", "filterable": True}},
                         "overrides": [
@@ -355,12 +355,11 @@ def deploy_dashboard():
                         {
                             "expr": "max by (target_ip, mac, hostname, lab_name) (rogue_device_detected == 1)",
                             "instant": True,
-                            "format": "time_series",
+                            "format": "table",
                             "refId": "A"
                         }
                     ],
                     "transformations": [
-                        {"id": "labelsToFields", "options": {"mode": "columns"}},
                         {
                             "id": "organize",
                             "options": {
@@ -374,7 +373,11 @@ def deploy_dashboard():
                             }
                         }
                     ],
-                    "options": {"footer": {"show": True, "countRows": True}},
+                    "options": {
+                        "cellOptions": {"type": "auto"},
+                        "footer": {"show": True, "countRows": True},
+                        "showHeader": True
+                    },
                     "fieldConfig": {"defaults": {"custom": {"align": "left", "filterable": True}}, "overrides": []}
                 },
 
