@@ -230,6 +230,20 @@ def audit_vulnerabilities(ip_str: str, open_services: List[str], lab_name: str) 
 
     return findings
 
+HOSTNAME_CACHE: Dict[str, str] = {}
+
+def resolve_hostname(ip: str) -> str:
+    if ip in HOSTNAME_CACHE:
+        return HOSTNAME_CACHE[ip]
+    try:
+        h = socket.gethostbyaddr(ip)[0]
+        HOSTNAME_CACHE[ip] = h
+        return h
+    except Exception:
+        h = f"PC-{ip.split('.')[-1]}"
+        HOSTNAME_CACHE[ip] = h
+        return h
+
 def probe_host(ip_str: str) -> Dict[str, Any]:
     open_services = []
     t_start = time.time()
@@ -249,7 +263,6 @@ def probe_host(ip_str: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Latency is the response time of actual responding services, or ping approximation
     if responding_latencies:
         latency_ms = min(responding_latencies)
     elif is_up:
@@ -257,12 +270,16 @@ def probe_host(ip_str: str) -> Dict[str, Any]:
     else:
         latency_ms = 0.0
 
+    hostname = resolve_hostname(ip_str) if is_up else ""
+
     return {
         "ip": ip_str,
         "is_up": is_up,
+        "hostname": hostname,
         "latency_ms": round(latency_ms, 2),
         "open_services": open_services
     }
+
 
 # ---------------------------------------------------------
 # Agentless WMI Security Audit (Safe & Thread-Initialized)
@@ -334,7 +351,7 @@ def sweep_subnet(subnet_range: str, lab_name: str, arp_cache: Dict[str, str]) ->
             if r["is_up"] or in_arp:
                 mac = arp_cache.get(ip, "Static/LAN")
                 vendor = lookup_mac_vendor(mac)
-                hostname = resolve_hostname(ip)
+                hostname = r.get("hostname") or resolve_hostname(ip)
                 services_str = ", ".join(r["open_services"]) if r["open_services"] else "ICMP/ARP Only"
                 
                 # Check Statistical Z-Score Latency Anomaly
@@ -364,7 +381,7 @@ def sweep_subnet(subnet_range: str, lab_name: str, arp_cache: Dict[str, str]) ->
                     ACTIVE_VULN_LABELS.add((ip, v["cve_id"], v["severity"], v["description"]))
 
                 # Compute CVSS 3.1 Quantitative Risk Score
-                risk_score = calculate_endpoint_risk_score(vuln_ids, [], 0, is_rogue)
+                risk_score = calculate_endpoint_risk_score(vuln_ids, is_rogue=is_rogue)
                 ENDPOINT_RISK_SCORE.labels(target_ip=ip, hostname=hostname, subnet=subnet_range, lab_name=lab_name).set(risk_score)
                 ACTIVE_RISK_LABELS.add((ip, hostname, subnet_range, lab_name))
 
