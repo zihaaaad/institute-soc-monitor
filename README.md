@@ -133,3 +133,15 @@ monitro/
 | **Prometheus Server** | `http://localhost:9090` | `http://<YOUR_IP>:9090` | Metric database & scraper health |
 | **Python Metrics Endpoint**| `http://localhost:8000/metrics` | `http://<YOUR_IP>:8000/metrics` | Raw Prometheus text metrics |
 | **Standalone Web Console** | `http://localhost:5000` | `http://<YOUR_IP>:5000` | Optional zero-Grafana lightweight web UI |
+
+---
+
+## Future Feature Roadmap
+
+* **Automated Multi-Channel Alerting**: Direct notifications to Telegram, Discord, Microsoft Teams, and Email when brute-force spikes (Event 4625) or blacklisted tools are detected.
+* **Rogue Device Detection**: Asset whitelist comparison to immediately flag unauthorized laptops, mobile devices, or rogue routers connected to lab ports.
+* **SNMP Switch & Router Monitoring**: Telemetry collection for port link status, bandwidth throughput, and CPU/RAM from Cisco, MikroTik, and TP-Link core switches.
+* **Agentless Vulnerability Checks**: Network-level exposure checks for critical unpatched Windows vulnerabilities (MS17-010 EternalBlue, CVE-2019-0708 BlueKeep, PrintNightmare).
+* **Automated PDF / Excel Compliance Reports**: Scheduled executive summary reports covering lab uptime, threat statistics, and inventory metrics.
+* **Dynamic Network Topology Map**: Visual node-graph illustrating routers, switches, and active workstations in real time.
+
