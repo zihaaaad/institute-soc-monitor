@@ -50,7 +50,7 @@ def deploy_dashboard():
             "title": "Institute Cyber Security SOC & Network Monitor",
             "tags": ["soc", "security", "network", "windows-endpoints", "mitre-attack", "threat-intel"],
             "timezone": "browser",
-            "schemaVersion": 39,
+            "schemaVersion": 41,
             "refresh": "5s",
             "time": {"from": "now-1h", "to": "now"},
             "panels": [
@@ -252,14 +252,16 @@ def deploy_dashboard():
                         }
                     ],
                     "options": {
-                        "cellOptions": {"type": "auto"},
-                        "footer": {"show": True, "countRows": True, "enablePagination": True},
-                        "showHeader": True
+                        "frameIndex": 0,
+                        "showHeader": True,
+                        "showTypeIcons": False,
+                        "sortBy": []
                     },
                     "fieldConfig": {
                         "defaults": {
                             "custom": {
-                                "align": "left",
+                                "align": "auto",
+                                "cellOptions": {"type": "auto"},
                                 "filterable": True
                             },
                             "mappings": [
@@ -319,12 +321,19 @@ def deploy_dashboard():
                         }
                     ],
                     "options": {
-                        "cellOptions": {"type": "auto"},
-                        "footer": {"show": True, "countRows": True},
-                        "showHeader": True
+                        "frameIndex": 0,
+                        "showHeader": True,
+                        "showTypeIcons": False,
+                        "sortBy": []
                     },
                     "fieldConfig": {
-                        "defaults": {"custom": {"align": "left", "filterable": True}},
+                        "defaults": {
+                            "custom": {
+                                "align": "auto",
+                                "cellOptions": {"type": "auto"},
+                                "filterable": True
+                            }
+                        },
                         "overrides": [
                             {
                                 "matcher": {"id": "byName", "options": "Severity"},
@@ -378,11 +387,21 @@ def deploy_dashboard():
                         }
                     ],
                     "options": {
-                        "cellOptions": {"type": "auto"},
-                        "footer": {"show": True, "countRows": True},
-                        "showHeader": True
+                        "frameIndex": 0,
+                        "showHeader": True,
+                        "showTypeIcons": False,
+                        "sortBy": []
                     },
-                    "fieldConfig": {"defaults": {"custom": {"align": "left", "filterable": True}}, "overrides": []}
+                    "fieldConfig": {
+                        "defaults": {
+                            "custom": {
+                                "align": "auto",
+                                "cellOptions": {"type": "auto"},
+                                "filterable": True
+                            }
+                        },
+                        "overrides": []
+                    }
                 },
 
                 # ----------------- 10. CVSS RISK GAUGE -----------------
