@@ -6,29 +6,42 @@ An enterprise-grade, lightweight, and 100% agentless network security monitoring
 
 ---
 
-## Universal 2-Step Quick Start
+## Prerequisites (One-Time)
 
-This system is completely portable. Anyone can clone or copy this folder to any directory or drive and get it running in 2 steps:
+Before running the system on a new PC, ensure you have:
+1. **Python 3.10+** (from [python.org](https://www.python.org/downloads/)) - *Make sure to check "Add Python to PATH" during installation.*
+2. **Grafana OSS** (from [grafana.com](https://grafana.com/grafana/download)) - *Standard Windows installer.*
 
-### Step 1: Run Universal Setup (Initial Run Only)
+---
+
+## 3-Step Quick Start
+
+### Step 1: Customize Your Network (Optional)
+Open `config.json` in any text editor (Notepad, VS Code) and add your IP ranges or lab names:
+```json
+{
+  "subnets": {
+    "192.168.1.0/24": "Main Lab",
+    "10.13.109.0/24": "Computer Science Lab"
+  }
+}
+```
+*(If you leave `config.json` untouched, it will automatically detect and scan your current local network).*
+
+### Step 2: Run Setup (First Time Only)
 Double-click `setup.bat` (or right-click and select **Run as Administrator**).
+* Installs required Python libraries.
+* Downloads Prometheus automatically.
+* Automatically imports and deploys the Grafana SOC Dashboard.
 
-This automated wizard will:
-1. Install required Python packages (`pip install -r requirements.txt`).
-2. Download and extract the Prometheus Server binary automatically if missing.
-3. Automatically deploy and configure the SOC Dashboard in Grafana via API.
-
-### Step 2: Start Monitoring
+### Step 3: Start Monitoring
 Right-click `start.bat` and select **Run as Administrator**.
-
-This launches:
-* The Python Agentless Security Engine on port 8000.
-* The Prometheus Server on port 9090.
-* Opens your browser directly to the Grafana SOC Dashboard:
+* Automatically launches the Python Scanner and Prometheus TSDB.
+* Opens your browser directly to the live dashboard:
   http://localhost:3000/d/institute-soc-overview
 
-### To Stop All Services:
-Double-click `stop.bat` to cleanly terminate all background monitoring processes.
+### To Stop All Monitoring:
+Double-click `stop.bat` to cleanly shut down all background services.
 
 ---
 
