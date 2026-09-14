@@ -50,15 +50,46 @@ ANOMALY_DETECTORS: Dict[str, LatencyAnomalyDetector] = {}
 ALERT_LOCK = threading.Lock()
 ALERT_COOLDOWN_MAP: Dict[str, float] = {}
 
-# Monitored Port Services (Attack Surface)
+# Monitored Port Services across All Connected Device Categories (PCs, Servers, Routers, Printers, Cameras, VoIP, IoT)
 PORT_SERVICE_MAP = {
+    # Windows & Active Directory
     135: "RPC/WMI",
+    139: "NetBIOS",
     445: "SMB/Shares",
-    80: "HTTP",
-    443: "HTTPS",
     3389: "RDP/Remote",
     5985: "WinRM",
-    8080: "Web Proxy"
+    
+    # Web & Management Interfaces
+    80: "HTTP",
+    443: "HTTPS",
+    8080: "HTTP-Proxy",
+    8443: "HTTPS-Admin",
+    8000: "Web-App",
+    8888: "Web-Admin",
+    
+    # Remote Management & Shells
+    22: "SSH",
+    23: "Telnet",
+    21: "FTP",
+    5900: "VNC",
+    
+    # Network Infrastructure
+    53: "DNS",
+    161: "SNMP",
+    
+    # Surveillance & IP Cameras
+    554: "RTSP-Camera",
+    8899: "ONVIF-Camera",
+    
+    # Network Printers & Peripherals
+    9100: "JetDirect-Printer",
+    631: "IPP-Printer",
+    
+    # Telephony & Database Services
+    5060: "SIP-VoIP",
+    1433: "MSSQL",
+    3306: "MySQL",
+    5432: "PostgreSQL"
 }
 
 # ---------------------------------------------------------
