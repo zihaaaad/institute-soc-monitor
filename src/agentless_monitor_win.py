@@ -1,4 +1,6 @@
+import os
 import time
+import json
 import threading
 import logging
 import subprocess
@@ -11,21 +13,49 @@ from prometheus_client import start_http_server, Gauge, Counter
 import wmi
 
 # ---------------------------------------------------------
-# Configuration & Setup
+# Dynamic Configuration Loader
 # ---------------------------------------------------------
-MONITORING_NODE_IP = "10.13.109.50"
-PROMETHEUS_PORT = 8000
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+
+def get_local_ip() -> str:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        return socket.gethostbyname(socket.gethostname())
+
+LOCAL_IP = get_local_ip()
+
+def load_config() -> Dict[str, Any]:
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"Error reading config.json: {e}")
+    
+    # Auto-detected fallback config
+    octets = LOCAL_IP.split(".")
+    default_subnet = f"{octets[0]}.{octets[1]}.{octets[2]}.0/24"
+    return {
+        "subnets": {default_subnet: "Local Network Lab"},
+        "credentials": {"windows_user": "Administrator", "windows_password": ""},
+        "settings": {"scan_interval_seconds": 60, "metrics_port": 8000},
+        "suspicious_processes": ["powershell.exe", "cmd.exe", "netcat.exe", "mimikatz.exe", "psexec.exe", "nmap.exe"]
+    }
+
+config = load_config()
+SUBNET_LAB_MAPPING = config.get("subnets", {})
+WINDOWS_USER = config.get("credentials", {}).get("windows_user", "Administrator")
+WINDOWS_PASS = config.get("credentials", {}).get("windows_password", "")
+SCAN_INTERVAL_SECONDS = config.get("settings", {}).get("scan_interval_seconds", 60)
+PROMETHEUS_PORT = config.get("settings", {}).get("metrics_port", 8000)
 FALLBACK_PORT = 8001
-SCAN_INTERVAL_SECONDS = 60  # Sweep interval (seconds)
-
-# Lab & Subnet Mapping for Institute Localization
-SUBNET_LAB_MAPPING = {
-    "10.13.109.0/24": "Lab 1 (Computer Science)",
-    "10.13.110.0/24": "Lab 2 (Software Engineering)",
-    "10.13.111.0/24": "Lab 3 (Networking & Cyber)"
-}
-
-TARGET_SUBNETS = list(SUBNET_LAB_MAPPING.keys())
+SUSPICIOUS_LIST = [p.lower() for p in config.get("suspicious_processes", [])]
 
 # Monitored Port Services (Attack Surface)
 PORT_SERVICE_MAP = {
@@ -38,18 +68,7 @@ PORT_SERVICE_MAP = {
     8080: "Web Proxy"
 }
 
-# Windows Domain / Local Admin credentials for WMI audit
-WINDOWS_USER = "Administrator"
-WINDOWS_PASS = "YourAdminPasswordHere"
-
-# Blacklist of unauthorized or suspicious executables
-SUSPICIOUS_LIST = [
-    "powershell.exe", "cmd.exe", "netcat.exe", "nc.exe",
-    "mimikatz.exe", "psexec.exe", "wireshark.exe", "nmap.exe",
-    "tor.exe", "anydesk.exe", "teamviewer.exe"
-]
-
-# Common MAC OUI prefixes for hardware vendor recognition
+# MAC OUI prefixes for hardware vendor recognition
 VENDOR_PREFIXES = {
     "00:50:56": "VMware",
     "00:0c:29": "VMware",
@@ -67,7 +86,7 @@ VENDOR_PREFIXES = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 
 # ---------------------------------------------------------
-# Rich Prometheus Metrics Setup
+# Prometheus Metrics Setup
 # ---------------------------------------------------------
 TOTAL_ENDPOINTS_GAUGE = Gauge("total_active_endpoints", "Total active computers discovered across all labs")
 TOTAL_THREATS_GAUGE = Gauge("total_threat_endpoints", "Total endpoints flagged with security alerts")
@@ -146,6 +165,8 @@ def probe_host(ip_str: str) -> Dict[str, Any]:
 # Agentless WMI Security Audit
 # ---------------------------------------------------------
 def audit_windows_pc(ip_address: str, lab_name: str, username: str, password: str):
+    if not password:
+        return
     try:
         connection = wmi.WMI(ip_address, user=username, password=password, timeout=5)
         
@@ -229,16 +250,16 @@ def sweep_subnet(subnet_range: str, lab_name: str, arp_cache: Dict[str, str]) ->
 # Main Monitoring Loop
 # ---------------------------------------------------------
 def start_monitoring():
-    logging.info(f"Starting Enhanced Agentless Security Engine on {MONITORING_NODE_IP}...")
+    logging.info(f"Starting Universal Agentless Security Engine on Host IP: {LOCAL_IP}...")
     
     used_port = PROMETHEUS_PORT
     try:
-        start_http_server(used_port)
-        logging.info(f"Prometheus Metrics Exporter running at http://{MONITORING_NODE_IP}:{used_port}/metrics")
+        start_http_server(used_port, addr="0.0.0.0")
+        logging.info(f"Prometheus Metrics Exporter running at http://0.0.0.0:{used_port}/metrics")
     except Exception:
         used_port = FALLBACK_PORT
-        start_http_server(used_port)
-        logging.info(f"Prometheus Metrics Exporter running at http://{MONITORING_NODE_IP}:{used_port}/metrics")
+        start_http_server(used_port, addr="0.0.0.0")
+        logging.info(f"Prometheus Metrics Exporter running at http://0.0.0.0:{used_port}/metrics")
 
     while True:
         t_sweep_start = time.time()
@@ -253,12 +274,12 @@ def start_monitoring():
         sweep_duration = round(time.time() - t_sweep_start, 2)
         SCAN_DURATION_GAUGE.set(sweep_duration)
         NETWORK_HEALTH_INDEX.set(100 if len(all_hosts) > 0 else 0)
-        logging.info(f"Cycle completed in {sweep_duration}s. Discovered {len(all_hosts)} active hosts across {len(SUBNET_LAB_MAPPING)} labs.")
+        logging.info(f"Cycle completed in {sweep_duration}s. Discovered {len(all_hosts)} active hosts across {len(SUBNET_LAB_MAPPING)} configured segments.")
 
         for host in all_hosts:
             host_ip = host["ip"]
             lab_name = host["lab_name"]
-            if host_ip != MONITORING_NODE_IP:
+            if host_ip != LOCAL_IP and WINDOWS_PASS:
                 threading.Thread(target=audit_windows_pc, args=(host_ip, lab_name, WINDOWS_USER, WINDOWS_PASS), daemon=True).start()
 
         time.sleep(SCAN_INTERVAL_SECONDS)

@@ -1,0 +1,30 @@
+{
+  "subnets": {
+    "10.13.109.0/24": "Lab 1 (Computer Science)",
+    "10.13.110.0/24": "Lab 2 (Software Engineering)",
+    "10.13.111.0/24": "Lab 3 (Networking & Cyber)"
+  },
+  "credentials": {
+    "windows_user": "Administrator",
+    "windows_password": "YourAdminPasswordHere"
+  },
+  "settings": {
+    "scan_interval_seconds": 60,
+    "metrics_port": 8000,
+    "prometheus_port": 9090,
+    "grafana_port": 3000
+  },
+  "suspicious_processes": [
+    "powershell.exe",
+    "cmd.exe",
+    "netcat.exe",
+    "nc.exe",
+    "mimikatz.exe",
+    "psexec.exe",
+    "wireshark.exe",
+    "nmap.exe",
+    "tor.exe",
+    "anydesk.exe",
+    "teamviewer.exe"
+  ]
+}

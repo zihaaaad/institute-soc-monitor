@@ -6,57 +6,84 @@ An enterprise-grade, lightweight, and 100% agentless network security monitoring
 
 ---
 
-## Directory Structure
+## Universal 2-Step Quick Start
 
-This project is built to be 100% portable. You can move this entire folder to any directory or drive (for example: D:\SOC_Monitor, C:\monitro, E:\Security) and run it immediately with zero configuration changes.
+This system is completely portable. Anyone can clone or copy this folder to any directory or drive and get it running in 2 steps:
+
+### Step 1: Run Universal Setup (Initial Run Only)
+Double-click `setup.bat` (or right-click and select **Run as Administrator**).
+
+This automated wizard will:
+1. Install required Python packages (`pip install -r requirements.txt`).
+2. Download and extract the Prometheus Server binary automatically if missing.
+3. Automatically deploy and configure the SOC Dashboard in Grafana via API.
+
+### Step 2: Start Monitoring
+Right-click `start.bat` and select **Run as Administrator**.
+
+This launches:
+* The Python Agentless Security Engine on port 8000.
+* The Prometheus Server on port 9090.
+* Opens your browser directly to the Grafana SOC Dashboard:
+  http://localhost:3000/d/institute-soc-overview
+
+### To Stop All Services:
+Double-click `stop.bat` to cleanly terminate all background monitoring processes.
+
+---
+
+## Universal Configuration (`config.json`)
+
+You do not need to modify any Python code. All subnet ranges, lab names, and admin credentials are configured in a single file: `config.json` located in the root directory.
+
+```json
+{
+  "subnets": {
+    "10.13.109.0/24": "Lab 1 (Computer Science)",
+    "10.13.110.0/24": "Lab 2 (Software Engineering)",
+    "10.13.111.0/24": "Lab 3 (Networking & Cyber)"
+  },
+  "credentials": {
+    "windows_user": "Administrator",
+    "windows_password": "YourAdminPasswordHere"
+  },
+  "settings": {
+    "scan_interval_seconds": 60,
+    "metrics_port": 8000,
+    "prometheus_port": 9090,
+    "grafana_port": 3000
+  }
+}
+```
+
+*Note: If `config.json` is left unchanged or empty, the engine automatically detects your local IP and scans your active local subnet.*
+
+---
+
+## Directory Structure
 
 ```
 monitro/
 │
-├── 1-Click Launchers (Root)
-│   ├── start_all.bat               # Master Launcher: Starts Monitor + Prometheus + Opens Grafana
-│   ├── stop_all.bat                # Master Killer: Terminates all running monitor processes
-│   ├── start_monitor.bat           # Starts only the Python Agentless Engine (Port 8000)
-│   ├── start_prometheus.bat        # Starts only the Prometheus Server (Port 9090)
-│   └── start_web_soc_dashboard.bat # Starts standalone lightweight Web UI (Port 5000)
+├── config.json             # Universal user configuration (Subnets, Passwords, Ports)
+├── setup.bat               # 1-Click Universal Installer & Configurator
+├── start.bat               # 1-Click Master Launcher (Starts Monitor + Prometheus + Grafana)
+├── stop.bat                # 1-Click Clean Shutdown
+├── requirements.txt        # Python package dependencies
+├── LICENSE                 # MIT Open Source License
 │
-├── src/                            # Python Source Code
-│   ├── agentless_monitor_win.py    # Main background scanner & Prometheus Exporter
-│   ├── setup_grafana.py            # Automated Grafana API Dashboard Deployer
-│   └── soc_dashboard.py            # Standalone FastAPI Dark-Mode Cyber Console
+├── src/                    # Python Source Engines
+│   ├── agentless_monitor_win.py  # Background network scanner & Prometheus exporter
+│   ├── setup_grafana.py          # Automated Grafana API Dashboard Deployer
+│   └── soc_dashboard.py          # Standalone FastAPI Cyber Console (Optional port 5000)
 │
-├── prometheus-3.14.0.windows-amd64/ # Embedded Prometheus Server
-│   ├── prometheus.exe              # Standalone Prometheus engine binary
-│   └── prometheus.yml              # Pre-configured scrape target configuration
+├── prometheus-3.14.0.windows-amd64/ # Standalone Prometheus Server & Config
 │
-└── Documentation & Setup
-    ├── README.md                   # System overview & quick start guide
-    ├── ARCHITECTURE.md             # Technical data flow & metrics dictionary
-    ├── DEPLOYMENT_GUIDE.md         # Portability, multi-subnet setup & troubleshooting
-    └── requirements.txt            # Python dependencies
+└── Documentation
+    ├── README.md           # System overview & quickstart
+    ├── ARCHITECTURE.md     # Technical data flow & metrics dictionary
+    └── DEPLOYMENT_GUIDE.md # Portability guide & troubleshooting
 ```
-
----
-
-## Quick Start Guide
-
-### Step 1: Install Python Dependencies (Initial Setup Only)
-Open a terminal in this folder and run:
-```cmd
-pip install -r requirements.txt
-```
-
-### Step 2: Launch the System (1-Click)
-Right-click `start_all.bat` and select **Run as Administrator**.
-
-This will automatically:
-1. Start the Python Agentless Security Engine on port `8000`.
-2. Start the Prometheus Server on port `9090`.
-3. Open your browser directly to the Grafana SOC Dashboard:
-   http://localhost:3000/d/institute-soc-overview
-
-### Step 3: Stop or Restart
-To stop all services cleanly, right-click `stop_all.bat` and select **Run as Administrator**.
 
 ---
 
@@ -84,7 +111,7 @@ To stop all services cleanly, right-click `stop_all.bat` and select **Run as Adm
 
 ---
 
-## Web Dashboards & Port Access
+## Web Access URLs
 
 | Dashboard / Service | Local URL | Network / Remote URL | Description |
 | :--- | :--- | :--- | :--- |
@@ -93,30 +120,3 @@ To stop all services cleanly, right-click `stop_all.bat` and select **Run as Adm
 | **Prometheus Server** | `http://localhost:9090` | `http://<YOUR_IP>:9090` | Metric database & scraper health |
 | **Python Metrics Endpoint**| `http://localhost:8000/metrics` | `http://<YOUR_IP>:8000/metrics` | Raw Prometheus text metrics |
 | **Standalone Web Console** | `http://localhost:5000` | `http://<YOUR_IP>:5000` | Optional zero-Grafana lightweight web UI |
-
----
-
-## Customization & Adding Subnets
-
-Open `src\agentless_monitor_win.py` and modify the configuration section:
-
-```python
-# Configure your institute subnets and lab names:
-SUBNET_LAB_MAPPING = {
-    "10.13.109.0/24": "Lab 1 (Computer Science)",
-    "10.13.110.0/24": "Lab 2 (Software Engineering)",
-    "10.13.111.0/24": "Lab 3 (Networking & Cyber)",
-    "10.13.112.0/24": "Lab 4 (Hardware & Robotics)"  # Add as many as needed
-}
-
-# Windows Administrator credentials for WMI audits:
-WINDOWS_USER = "Administrator"
-WINDOWS_PASS = "YourActualPasswordHere"
-```
-
----
-
-## Technical Documentation Links
-
-* [ARCHITECTURE.md](ARCHITECTURE.md): Technical details on the agentless scanning engine, data pipeline, and Prometheus metrics.
-* [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md): Portability guide, multi-drive relocation, and troubleshooting.
