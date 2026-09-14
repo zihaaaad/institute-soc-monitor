@@ -230,19 +230,15 @@ def deploy_dashboard():
                     ],
                     "transformations": [
                         {
+                            "id": "merge",
+                            "options": {}
+                        },
+                        {
                             "id": "organize",
                             "options": {
                                 "excludeByName": {
                                     "Time": True,
                                     "__name__": True
-                                },
-                                "indexByName": {
-                                    "target_ip": 0,
-                                    "hostname": 1,
-                                    "subnet": 2,
-                                    "mac": 3,
-                                    "vendor": 4,
-                                    "Value": 5
                                 },
                                 "renameByName": {
                                     "target_ip": "IP Address",
@@ -305,6 +301,10 @@ def deploy_dashboard():
                     ],
                     "transformations": [
                         {
+                            "id": "merge",
+                            "options": {}
+                        },
+                        {
                             "id": "organize",
                             "options": {
                                 "excludeByName": {"Time": True, "__name__": True, "Value": True},
@@ -360,6 +360,10 @@ def deploy_dashboard():
                         }
                     ],
                     "transformations": [
+                        {
+                            "id": "merge",
+                            "options": {}
+                        },
                         {
                             "id": "organize",
                             "options": {
