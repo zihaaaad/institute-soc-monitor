@@ -79,6 +79,8 @@ monitro/
 │
 ├── src/                            # Python Source Engines
 │   ├── agentless_monitor_win.py    # Background network scanner, rogue detector & Prometheus exporter
+│   ├── oui_database.py             # IEEE Standards MAC OUI Hardware Vendor Database
+│   ├── threat_intel.py             # MITRE ATT&CK Mapping & CVSS 3.1 Risk Scoring Engine
 │   ├── setup_grafana.py            # Automated Grafana API Dashboard Deployer
 │   ├── generate_report.py          # Executive SOC Compliance & Incident Report Generator
 │   └── soc_dashboard.py            # Standalone FastAPI Cyber Console (Optional port 5000)
