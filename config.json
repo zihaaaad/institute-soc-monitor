@@ -6,13 +6,31 @@
   },
   "credentials": {
     "windows_user": "Administrator",
-    "windows_password": "YourAdminPasswordHere"
+    "windows_password": ""
   },
   "settings": {
     "scan_interval_seconds": 60,
     "metrics_port": 8000,
     "prometheus_port": 9090,
     "grafana_port": 3000
+  },
+  "asset_whitelist": [
+    "00:15:5d:00:00:01",
+    "34:5a:60:11:22:33"
+  ],
+  "alerts": {
+    "enabled": false,
+    "discord_webhook_url": "",
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "alert_cooldown_seconds": 300
+  },
+  "vulnerability_audit": {
+    "enabled": true,
+    "check_smbv1": true,
+    "check_rdp_exposure": true,
+    "check_cleartext_http": true,
+    "check_rpc_mapper": true
   },
   "suspicious_processes": [
     "powershell.exe",

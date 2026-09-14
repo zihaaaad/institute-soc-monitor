@@ -20,7 +20,7 @@ def make_request(path, method="GET", data=None):
 
 def deploy_dashboard():
     print("=" * 75)
-    print(" Configuring Grafana & Deploying Complete SOC Dashboard...")
+    print(" Configuring Grafana & Deploying World-Class SOC Dashboard...")
     print("=" * 75)
     
     datasources = make_request("/api/datasources")
@@ -48,7 +48,7 @@ def deploy_dashboard():
             "id": None,
             "uid": "institute-soc-overview",
             "title": "Institute Cyber Security SOC & Network Monitor",
-            "tags": ["soc", "security", "network", "windows-endpoints"],
+            "tags": ["soc", "security", "network", "windows-endpoints", "threat-intel"],
             "timezone": "browser",
             "refresh": "5s",
             "time": {"from": "now-1h", "to": "now"},
@@ -56,9 +56,9 @@ def deploy_dashboard():
                 # ----------------- 1. ACTIVE COMPUTERS -----------------
                 {
                     "id": 1,
-                    "title": "Total Active Computers",
+                    "title": "Active Computers",
                     "type": "stat",
-                    "gridPos": {"h": 4, "w": 5, "x": 0, "y": 0},
+                    "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
                     "targets": [{"expr": "count(max by (target_ip) (endpoint_status)) or vector(0)", "refId": "A"}],
                     "options": {
@@ -77,14 +77,14 @@ def deploy_dashboard():
                         "overrides": []
                     }
                 },
-                # ----------------- 2. SUBNETS -----------------
+                # ----------------- 2. ROGUE DEVICES -----------------
                 {
                     "id": 2,
-                    "title": "Monitored Subnets",
+                    "title": "Rogue / Unauthorized PCs",
                     "type": "stat",
-                    "gridPos": {"h": 4, "w": 4, "x": 5, "y": 0},
+                    "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
-                    "targets": [{"expr": "count(count by (subnet) (endpoint_status)) or vector(3)", "refId": "A"}],
+                    "targets": [{"expr": "total_rogue_devices or vector(0)", "refId": "A"}],
                     "options": {
                         "colorMode": "background",
                         "graphMode": "none",
@@ -94,25 +94,51 @@ def deploy_dashboard():
                     "fieldConfig": {
                         "defaults": {
                             "unit": "short",
-                            "color": {"mode": "fixed", "fixedColor": "dark-blue"},
-                            "thresholds": {"mode": "absolute", "steps": [{"color": "dark-blue", "value": None}]}
+                            "color": {"mode": "thresholds"},
+                            "thresholds": {
+                                "mode": "absolute",
+                                "steps": [
+                                    {"color": "#10B981", "value": None},
+                                    {"color": "#EF4444", "value": 1}
+                                ]
+                            }
                         },
                         "overrides": []
                     }
                 },
-                # ----------------- 3. HEALTH RATING -----------------
+                # ----------------- 3. VULNERABILITIES DETECTED -----------------
                 {
                     "id": 3,
-                    "title": "Security Health Rating",
+                    "title": "Vulnerability Risks",
                     "type": "stat",
-                    "gridPos": {"h": 4, "w": 5, "x": 9, "y": 0},
+                    "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
-                    "targets": [
-                        {
-                            "expr": "clamp_max(100 - ((sum(increase(brute_force_attempts_total[5m])) or vector(0)) * 5 + (sum(suspicious_process_detected == 1) or vector(0)) * 15), 100)",
-                            "refId": "A"
-                        }
-                    ],
+                    "targets": [{"expr": "total_vulnerabilities_detected or vector(0)", "refId": "A"}],
+                    "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "textMode": "value_and_name"},
+                    "fieldConfig": {
+                        "defaults": {
+                            "unit": "short",
+                            "color": {"mode": "thresholds"},
+                            "thresholds": {
+                                "mode": "absolute",
+                                "steps": [
+                                    {"color": "#10B981", "value": None},
+                                    {"color": "#F59E0B", "value": 1},
+                                    {"color": "#EF4444", "value": 5}
+                                ]
+                            }
+                        },
+                        "overrides": []
+                    }
+                },
+                # ----------------- 4. HEALTH RATING -----------------
+                {
+                    "id": 4,
+                    "title": "Security Health Posture",
+                    "type": "stat",
+                    "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+                    "datasource": {"type": "prometheus", "uid": ds_uid},
+                    "targets": [{"expr": "network_health_index or vector(100)", "refId": "A"}],
                     "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "textMode": "value_and_name"},
                     "fieldConfig": {
                         "defaults": {
@@ -133,12 +159,12 @@ def deploy_dashboard():
                         "overrides": []
                     }
                 },
-                # ----------------- 4. LATENCY -----------------
+                # ----------------- 5. LATENCY -----------------
                 {
-                    "id": 4,
-                    "title": "Average Response Latency",
+                    "id": 5,
+                    "title": "Average Network Latency",
                     "type": "stat",
-                    "gridPos": {"h": 4, "w": 5, "x": 14, "y": 0},
+                    "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
                     "targets": [{"expr": "avg(endpoint_latency_ms) or vector(0)", "refId": "A"}],
                     "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "textMode": "value_and_name"},
@@ -151,20 +177,20 @@ def deploy_dashboard():
                                 "mode": "absolute",
                                 "steps": [
                                     {"color": "#10B981", "value": None},
-                                    {"color": "#F59E0B", "value": 40},
-                                    {"color": "#EF4444", "value": 100}
+                                    {"color": "#F59E0B", "value": 30},
+                                    {"color": "#EF4444", "value": 80}
                                 ]
                             }
                         },
                         "overrides": []
                     }
                 },
-                # ----------------- 5. LOGON FAILURES -----------------
+                # ----------------- 6. LOGON ANOMALIES -----------------
                 {
-                    "id": 5,
-                    "title": "Logon Anomaly Alerts (5m)",
+                    "id": 6,
+                    "title": "Logon Failures (5m)",
                     "type": "stat",
-                    "gridPos": {"h": 4, "w": 5, "x": 19, "y": 0},
+                    "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
                     "targets": [{"expr": "sum(increase(brute_force_attempts_total[5m])) or vector(0)", "refId": "A"}],
                     "options": {"colorMode": "background", "graphMode": "area", "justifyMode": "center", "textMode": "value_and_name"},
@@ -186,12 +212,12 @@ def deploy_dashboard():
                     }
                 },
 
-                # ----------------- 6. MASTER ENDPOINT TABLE -----------------
+                # ----------------- 7. MASTER ENDPOINT INVENTORY TABLE -----------------
                 {
-                    "id": 6,
-                    "title": "Master Endpoint Inventory Matrix (All Discovered Active PCs)",
+                    "id": 7,
+                    "title": "Master Endpoint Inventory Matrix (All Active Workstations)",
                     "type": "table",
-                    "gridPos": {"h": 12, "w": 24, "x": 0, "y": 4},
+                    "gridPos": {"h": 10, "w": 24, "x": 0, "y": 4},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
                     "targets": [
                         {
@@ -263,12 +289,97 @@ def deploy_dashboard():
                     }
                 },
 
-                # ----------------- 7. SUBNET DISTRIBUTION -----------------
+                # ----------------- 8. VULNERABILITY AUDIT TABLE -----------------
                 {
-                    "id": 7,
+                    "id": 8,
+                    "title": "Attack Surface & Vulnerability Risk Matrix",
+                    "type": "table",
+                    "gridPos": {"h": 8, "w": 14, "x": 0, "y": 14},
+                    "datasource": {"type": "prometheus", "uid": ds_uid},
+                    "targets": [
+                        {
+                            "expr": "max by (target_ip, cve_id, severity, description) (vulnerability_exposure == 1)",
+                            "instant": True,
+                            "format": "time_series",
+                            "refId": "A"
+                        }
+                    ],
+                    "transformations": [
+                        {"id": "labelsToFields", "options": {"mode": "columns"}},
+                        {
+                            "id": "organize",
+                            "options": {
+                                "excludeByName": {"Time": True, "__name__": True, "Value": True},
+                                "renameByName": {
+                                    "target_ip": "Target IP",
+                                    "cve_id": "Vulnerability / CVE",
+                                    "severity": "Severity Level",
+                                    "description": "Description"
+                                }
+                            }
+                        }
+                    ],
+                    "options": {"footer": {"show": True, "countRows": True}},
+                    "fieldConfig": {
+                        "defaults": {"custom": {"align": "left", "filterable": True}},
+                        "overrides": [
+                            {
+                                "matcher": {"id": "byName", "options": "Severity Level"},
+                                "properties": [
+                                    {
+                                        "id": "mappings",
+                                        "value": [
+                                            {"type": "value", "options": {"HIGH": {"text": "HIGH", "color": "dark-red"}}},
+                                            {"type": "value", "options": {"MEDIUM": {"text": "MEDIUM", "color": "dark-orange"}}},
+                                            {"type": "value", "options": {"LOW": {"text": "LOW", "color": "dark-blue"}}}
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                },
+
+                # ----------------- 9. ROGUE DEVICE TABLE -----------------
+                {
+                    "id": 9,
+                    "title": "Unauthorized / Rogue Device Alarms",
+                    "type": "table",
+                    "gridPos": {"h": 8, "w": 10, "x": 14, "y": 14},
+                    "datasource": {"type": "prometheus", "uid": ds_uid},
+                    "targets": [
+                        {
+                            "expr": "max by (target_ip, mac, hostname, lab_name) (rogue_device_detected == 1)",
+                            "instant": True,
+                            "format": "time_series",
+                            "refId": "A"
+                        }
+                    ],
+                    "transformations": [
+                        {"id": "labelsToFields", "options": {"mode": "columns"}},
+                        {
+                            "id": "organize",
+                            "options": {
+                                "excludeByName": {"Time": True, "__name__": True, "Value": True},
+                                "renameByName": {
+                                    "target_ip": "Rogue IP",
+                                    "mac": "MAC Address",
+                                    "hostname": "Hostname",
+                                    "lab_name": "Lab Location"
+                                }
+                            }
+                        }
+                    ],
+                    "options": {"footer": {"show": True, "countRows": True}},
+                    "fieldConfig": {"defaults": {"custom": {"align": "left", "filterable": True}}, "overrides": []}
+                },
+
+                # ----------------- 10. SUBNET DISTRIBUTION -----------------
+                {
+                    "id": 10,
                     "title": "Subnet / Lab Connected Device Distribution",
                     "type": "bargauge",
-                    "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+                    "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
                     "targets": [{"expr": "count by (subnet) (endpoint_status)", "legendFormat": "{{subnet}}", "refId": "A"}],
                     "options": {
@@ -286,12 +397,13 @@ def deploy_dashboard():
                         "overrides": []
                     }
                 },
-                # ----------------- 8. LATENCY BREAKDOWN -----------------
+
+                # ----------------- 11. LATENCY BREAKDOWN -----------------
                 {
-                    "id": 8,
+                    "id": 11,
                     "title": "Endpoint Network Latency Breakdown (ms)",
                     "type": "bargauge",
-                    "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+                    "gridPos": {"h": 8, "w": 12, "x": 12, "y": 22},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
                     "targets": [{"expr": "max by (target_ip) (endpoint_latency_ms)", "legendFormat": "{{target_ip}}", "refId": "A"}],
                     "options": {
@@ -319,12 +431,13 @@ def deploy_dashboard():
                         "overrides": []
                     }
                 },
-                # ----------------- 9. PRESENCE TIMELINE -----------------
+
+                # ----------------- 12. PRESENCE TIMELINE -----------------
                 {
-                    "id": 9,
+                    "id": 12,
                     "title": "Subnet Computer Presence Timeline (Historical Activity)",
                     "type": "timeseries",
-                    "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+                    "gridPos": {"h": 8, "w": 24, "x": 0, "y": 30},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
                     "targets": [{"expr": "count by (subnet) (endpoint_status)", "legendFormat": "Subnet: {{subnet}}", "refId": "A"}],
                     "options": {

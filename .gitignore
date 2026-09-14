@@ -38,3 +38,6 @@ prometheus-3.14.0.windows-amd64/data/
 .DS_Store
 Thumbs.db
 *.log
+EXECUTIVE_AUDIT_REPORT.md
+executive_audit_report.html
+

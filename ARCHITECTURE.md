@@ -68,10 +68,14 @@ This document outlines the core architecture, agentless discovery mechanics, Pro
 | Metric Name | Type | Labels | Description |
 | :--- | :--- | :--- | :--- |
 | `total_active_endpoints` | `Gauge` | None | Total active computers across all subnets |
+| `total_rogue_devices` | `Gauge` | None | Total count of unauthorized / rogue devices detected |
+| `total_vulnerabilities_detected` | `Gauge` | None | Total active vulnerability and exposure risks |
 | `active_network_hosts` | `Gauge` | `subnet`, `lab_name` | Number of active endpoints in each lab segment |
 | `endpoint_status` | `Gauge` | `target_ip`, `hostname`, `subnet`, `lab_name`, `mac`, `vendor`, `open_services` | Value 1 indicating an online machine with full hardware metadata |
 | `endpoint_latency_ms` | `Gauge` | `target_ip`, `subnet`, `lab_name` | Round-trip network response latency (in ms) |
 | `endpoint_port_exposure`| `Gauge` | `target_ip`, `subnet`, `service` | Value 1 for each open service (RDP, SMB, WMI, WinRM, HTTP) |
+| `rogue_device_detected` | `Gauge` | `target_ip`, `mac`, `hostname`, `lab_name` | Value 1 if the device is not in asset_whitelist |
+| `vulnerability_exposure`| `Gauge` | `target_ip`, `cve_id`, `severity`, `description` | Value 1 when an attack surface vulnerability is flagged |
 | `brute_force_attempts_total` | `Counter` | `target_ip`, `lab_name` | Accumulated failed logon events per target IP |
 | `suspicious_process_detected` | `Gauge` | `target_ip`, `process_name`, `lab_name` | Value 1 when a blacklisted binary is detected |
 | `network_scan_duration_seconds` | `Gauge` | None | Total elapsed time to complete a full network cycle |
@@ -83,3 +87,4 @@ This document outlines the core architecture, agentless discovery mechanics, Pro
 * Deduplication Strategy: Metrics are queried using `max by (target_ip, hostname, subnet, mac) (endpoint_status)` to prevent multi-target duplicate rows.
 * Transformation Pipeline: Uses Grafana's native `labelsToFields` (mode: `columns`) and `organize` to map Prometheus multi-series dataframes directly into structured table columns.
 * Auto-Refresh Interval: Configured for 5 seconds real-time streaming updates.
+
