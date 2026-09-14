@@ -48,7 +48,7 @@ def deploy_dashboard():
             "id": None,
             "uid": "institute-soc-overview",
             "title": "Institute Cyber Security SOC & Network Monitor",
-            "tags": ["soc", "security", "network", "windows-endpoints", "threat-intel"],
+            "tags": ["soc", "security", "network", "windows-endpoints", "mitre-attack", "threat-intel"],
             "timezone": "browser",
             "refresh": "5s",
             "time": {"from": "now-1h", "to": "now"},
@@ -215,13 +215,13 @@ def deploy_dashboard():
                 # ----------------- 7. MASTER ENDPOINT INVENTORY TABLE -----------------
                 {
                     "id": 7,
-                    "title": "Master Endpoint Inventory Matrix (All Active Workstations)",
+                    "title": "Master Endpoint Inventory Matrix (Hardware & IEEE Vendor Recognition)",
                     "type": "table",
                     "gridPos": {"h": 10, "w": 24, "x": 0, "y": 4},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
                     "targets": [
                         {
-                            "expr": "max by (target_ip, hostname, subnet, mac) (endpoint_status)",
+                            "expr": "max by (target_ip, hostname, subnet, mac, vendor) (endpoint_status)",
                             "instant": True,
                             "format": "time_series",
                             "refId": "A"
@@ -246,13 +246,15 @@ def deploy_dashboard():
                                     "hostname": 1,
                                     "subnet": 2,
                                     "mac": 3,
-                                    "Value": 4
+                                    "vendor": 4,
+                                    "Value": 5
                                 },
                                 "renameByName": {
                                     "target_ip": "IP Address",
                                     "hostname": "Computer Name",
                                     "subnet": "Subnet / Lab Segment",
                                     "mac": "Hardware MAC Address",
+                                    "vendor": "Hardware Vendor (OUI)",
                                     "Value": "Status"
                                 }
                             }
@@ -289,16 +291,16 @@ def deploy_dashboard():
                     }
                 },
 
-                # ----------------- 8. VULNERABILITY AUDIT TABLE -----------------
+                # ----------------- 8. MITRE ATT&CK FRAMEWORK TABLE -----------------
                 {
                     "id": 8,
-                    "title": "Attack Surface & Vulnerability Risk Matrix",
+                    "title": "MITRE ATT&CK Threat Framework Alignment Matrix",
                     "type": "table",
                     "gridPos": {"h": 8, "w": 14, "x": 0, "y": 14},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
                     "targets": [
                         {
-                            "expr": "max by (target_ip, cve_id, severity, description) (vulnerability_exposure == 1)",
+                            "expr": "max by (target_ip, technique_id, technique_name, tactic, severity) (mitre_attack_technique == 1)",
                             "instant": True,
                             "format": "time_series",
                             "refId": "A"
@@ -312,9 +314,10 @@ def deploy_dashboard():
                                 "excludeByName": {"Time": True, "__name__": True, "Value": True},
                                 "renameByName": {
                                     "target_ip": "Target IP",
-                                    "cve_id": "Vulnerability / CVE",
-                                    "severity": "Severity Level",
-                                    "description": "Description"
+                                    "technique_id": "MITRE ID",
+                                    "technique_name": "Technique Name",
+                                    "tactic": "ATT&CK Tactic",
+                                    "severity": "Severity"
                                 }
                             }
                         }
@@ -324,12 +327,13 @@ def deploy_dashboard():
                         "defaults": {"custom": {"align": "left", "filterable": True}},
                         "overrides": [
                             {
-                                "matcher": {"id": "byName", "options": "Severity Level"},
+                                "matcher": {"id": "byName", "options": "Severity"},
                                 "properties": [
                                     {
                                         "id": "mappings",
                                         "value": [
-                                            {"type": "value", "options": {"HIGH": {"text": "HIGH", "color": "dark-red"}}},
+                                            {"type": "value", "options": {"CRITICAL": {"text": "CRITICAL", "color": "dark-red"}}},
+                                            {"type": "value", "options": {"HIGH": {"text": "HIGH", "color": "red"}}},
                                             {"type": "value", "options": {"MEDIUM": {"text": "MEDIUM", "color": "dark-orange"}}},
                                             {"type": "value", "options": {"LOW": {"text": "LOW", "color": "dark-blue"}}}
                                         ]
@@ -374,14 +378,14 @@ def deploy_dashboard():
                     "fieldConfig": {"defaults": {"custom": {"align": "left", "filterable": True}}, "overrides": []}
                 },
 
-                # ----------------- 10. SUBNET DISTRIBUTION -----------------
+                # ----------------- 10. CVSS RISK GAUGE -----------------
                 {
                     "id": 10,
-                    "title": "Subnet / Lab Connected Device Distribution",
+                    "title": "Endpoint CVSS v3.1 Quantitative Risk Scores",
                     "type": "bargauge",
                     "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
                     "datasource": {"type": "prometheus", "uid": ds_uid},
-                    "targets": [{"expr": "count by (subnet) (endpoint_status)", "legendFormat": "{{subnet}}", "refId": "A"}],
+                    "targets": [{"expr": "max by (target_ip) (endpoint_risk_score)", "legendFormat": "{{target_ip}}", "refId": "A"}],
                     "options": {
                         "displayMode": "gradient",
                         "orientation": "horizontal",
@@ -391,8 +395,18 @@ def deploy_dashboard():
                     "fieldConfig": {
                         "defaults": {
                             "unit": "short",
+                            "min": 0,
+                            "max": 100,
                             "decimals": 0,
-                            "color": {"mode": "palette-classic"}
+                            "color": {"mode": "thresholds"},
+                            "thresholds": {
+                                "mode": "absolute",
+                                "steps": [
+                                    {"color": "#10B981", "value": None},
+                                    {"color": "#F59E0B", "value": 30},
+                                    {"color": "#EF4444", "value": 60}
+                                ]
+                            }
                         },
                         "overrides": []
                     }

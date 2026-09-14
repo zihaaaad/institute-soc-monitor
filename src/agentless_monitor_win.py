@@ -13,6 +13,9 @@ from typing import Dict, List, Any, Set
 from prometheus_client import start_http_server, Gauge, Counter
 import wmi
 
+from oui_database import lookup_mac_vendor
+from threat_intel import MITRE_TECHNIQUES, calculate_endpoint_risk_score, LatencyAnomalyDetector
+
 # ---------------------------------------------------------
 # Dynamic Configuration Loader
 # ---------------------------------------------------------
@@ -65,7 +68,8 @@ ALERTS_CONFIG = config.get("alerts", {})
 VULN_CONFIG = config.get("vulnerability_audit", {})
 SUSPICIOUS_LIST = [p.lower() for p in config.get("suspicious_processes", [])]
 
-# Alert Cooldown Cache: (target_ip, alert_type) -> last_alert_time
+# Anomaly Detector per subnet
+ANOMALY_DETECTORS: Dict[str, LatencyAnomalyDetector] = {}
 ALERT_COOLDOWN_MAP: Dict[str, float] = {}
 
 # Monitored Port Services (Attack Surface)
@@ -77,21 +81,6 @@ PORT_SERVICE_MAP = {
     3389: "RDP/Remote",
     5985: "WinRM",
     8080: "Web Proxy"
-}
-
-# MAC OUI prefixes for hardware vendor recognition
-VENDOR_PREFIXES = {
-    "00:50:56": "VMware",
-    "00:0c:29": "VMware",
-    "00:15:5d": "Microsoft Hyper-V",
-    "34:5a:60": "Realtek / Intel LAN",
-    "10:7c:61": "Intel NIC",
-    "b0:19:21": "Realtek PCIe",
-    "08:bf:b8": "ASRock / ASUS",
-    "d4:01:c3": "Cisco / Router",
-    "00:80:91": "D-Link / Switch",
-    "e4:54:e8": "Dell",
-    "70:85:c2": "HP"
 }
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -114,6 +103,11 @@ ENDPOINT_STATUS_GAUGE = Gauge(
 )
 ENDPOINT_LATENCY_GAUGE = Gauge("endpoint_latency_ms", "Endpoint round-trip network response time", ["target_ip", "subnet", "lab_name"])
 ENDPOINT_PORT_EXPOSURE = Gauge("endpoint_port_exposure", "Count of exposed management & service ports", ["target_ip", "subnet", "service"])
+
+# Open-Source MITRE ATT&CK & CVSS Risk Metrics
+ENDPOINT_RISK_SCORE = Gauge("endpoint_risk_score", "Calculated CVSS v3.1 quantitative risk score (0-100)", ["target_ip", "hostname", "subnet", "lab_name"])
+MITRE_ATTACK_GAUGE = Gauge("mitre_attack_technique", "MITRE ATT&CK mapped security technique active", ["target_ip", "technique_id", "technique_name", "tactic", "severity"])
+LATENCY_ANOMALY_GAUGE = Gauge("network_latency_anomaly", "Statistical Z-Score anomaly flag (>3 sigma)", ["target_ip", "subnet"])
 
 # Security Incident & Threat Gauges
 ROGUE_DEVICE_GAUGE = Gauge("rogue_device_detected", "Rogue or unauthorized device flag", ["target_ip", "mac", "hostname", "lab_name"])
@@ -142,7 +136,7 @@ def dispatch_alert(title: str, message: str, severity: str, target_ip: str, aler
         if discord_url:
             try:
                 payload = {
-                    "username": "Institute SOC Monitor",
+                    "username": "Institute Cyber SOC Monitor",
                     "embeds": [{
                         "title": f"[{severity.upper()}] {title}",
                         "description": message,
@@ -188,15 +182,6 @@ def get_arp_cache() -> Dict[str, str]:
     except Exception:
         return {}
 
-def resolve_vendor(mac: str) -> str:
-    if not mac or mac == "dynamic/lan" or mac == "static/lan":
-        return "Generic LAN"
-    mac_prefix = mac[:8].lower()
-    for prefix, vendor in VENDOR_PREFIXES.items():
-        if mac_prefix.startswith(prefix.lower()):
-            return vendor
-    return "Standard PC / NIC"
-
 def resolve_hostname(ip: str) -> str:
     try:
         return socket.gethostbyaddr(ip)[0]
@@ -206,24 +191,23 @@ def resolve_hostname(ip: str) -> str:
 def check_smbv1(ip_str: str) -> bool:
     """Defensive check to see if target host supports legacy SMBv1 dialect negotiation."""
     try:
-        # SMBv1 Protocol Negotiation Packet
         smbv1_packet = (
-            b'\x00\x00\x00\x85'  # NetBIOS Session Message header (length 133)
-            b'\xff\x53\x4d\x42'  # SMB Header: 0xFF 'SMB'
-            b'\x72'              # Command: SMB_COM_NEGOTIATE (0x72)
-            b'\x00\x00\x00\x00'  # Status: Success
-            b'\x18'              # Flags: Caseless pathnames, Canonicalized
-            b'\x53\xc8'          # Flags2: Unicode strings, NT Status error codes
-            b'\x00\x00'          # Process ID High
-            b'\x00\x00\x00\x00\x00\x00\x00\x00'  # Signature
-            b'\x00\x00'          # Reserved
-            b'\x00\x00'          # Tree ID
-            b'\x00\x00'          # Process ID
-            b'\x00\x00'          # User ID
-            b'\x00\x00'          # Multiplex ID
-            b'\x00'              # Word Count
-            b'\x62\x00'          # Byte Count (98 bytes)
-            b'\x02\x4e\x54\x20\x4c\x4d\x20\x30\x2e\x31\x32\x00'  # Dialect: NT LM 0.12 (SMBv1)
+            b'\x00\x00\x00\x85'
+            b'\xff\x53\x4d\x42'
+            b'\x72'
+            b'\x00\x00\x00\x00'
+            b'\x18'
+            b'\x53\xc8'
+            b'\x00\x00'
+            b'\x00\x00\x00\x00\x00\x00\x00\x00'
+            b'\x00\x00'
+            b'\x00\x00'
+            b'\x00\x00'
+            b'\x00\x00'
+            b'\x00\x00'
+            b'\x00'
+            b'\x62\x00'
+            b'\x02\x4e\x54\x20\x4c\x4d\x20\x30\x2e\x31\x32\x00'
         )
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(0.25)
@@ -231,7 +215,6 @@ def check_smbv1(ip_str: str) -> bool:
         s.sendall(smbv1_packet)
         response = s.recv(1024)
         s.close()
-        # If response contains \xffSMB header and negotiate response (0x72), SMBv1 is enabled
         if len(response) >= 8 and response[4:8] == b'\xffSMB' and response[8] == 0x72:
             return True
     except Exception:
@@ -248,39 +231,29 @@ def audit_vulnerabilities(ip_str: str, open_services: List[str], lab_name: str) 
     if "SMB/Shares" in open_services and VULN_CONFIG.get("check_smbv1", True):
         has_smbv1 = check_smbv1(ip_str)
         if has_smbv1:
-            findings.append({
-                "cve_id": "MS17-010-RISK",
-                "severity": "HIGH",
-                "description": "Legacy SMBv1 Protocol Active on Port 445"
-            })
+            findings.append({"cve_id": "MS17-010-RISK", "severity": "HIGH", "description": "Legacy SMBv1 Protocol Active on Port 445"})
             VULNERABILITY_GAUGE.labels(target_ip=ip_str, cve_id="MS17-010-RISK", severity="HIGH", description="Legacy SMBv1 Protocol Active").set(1)
+            
+            # Map MITRE Technique
+            t_info = MITRE_TECHNIQUES["MS17-010-RISK"]
+            MITRE_ATTACK_GAUGE.labels(target_ip=ip_str, technique_id=t_info["technique_id"], technique_name=t_info["technique_name"], tactic=t_info["tactic"], severity=t_info["severity"]).set(1)
             dispatch_alert("Legacy SMBv1 Protocol Detected", f"Host {ip_str} in {lab_name} has SMBv1 enabled. Vulnerable to lateral movement.", "HIGH", ip_str, "smbv1")
 
     # 2. Exposed RDP Management Port
     if "RDP/Remote" in open_services and VULN_CONFIG.get("check_rdp_exposure", True):
-        findings.append({
-            "cve_id": "RDP-EXPOSURE",
-            "severity": "MEDIUM",
-            "description": "Exposed Remote Desktop Port 3389"
-        })
+        findings.append({"cve_id": "RDP-EXPOSURE", "severity": "MEDIUM", "description": "Exposed Remote Desktop Port 3389"})
         VULNERABILITY_GAUGE.labels(target_ip=ip_str, cve_id="RDP-EXPOSURE", severity="MEDIUM", description="Exposed Remote Desktop Port 3389").set(1)
+        t_info = MITRE_TECHNIQUES["RDP-EXPOSURE"]
+        MITRE_ATTACK_GAUGE.labels(target_ip=ip_str, technique_id=t_info["technique_id"], technique_name=t_info["technique_name"], tactic=t_info["tactic"], severity=t_info["severity"]).set(1)
 
     # 3. Unencrypted Cleartext HTTP Service
     if "HTTP" in open_services and VULN_CONFIG.get("check_cleartext_http", True):
-        findings.append({
-            "cve_id": "CLEARTEXT-HTTP",
-            "severity": "LOW",
-            "description": "Unencrypted HTTP Port 80 Active"
-        })
+        findings.append({"cve_id": "CLEARTEXT-HTTP", "severity": "LOW", "description": "Unencrypted HTTP Port 80 Active"})
         VULNERABILITY_GAUGE.labels(target_ip=ip_str, cve_id="CLEARTEXT-HTTP", severity="LOW", description="Unencrypted HTTP Port 80").set(1)
 
     # 4. RPC / DCOM Port Exposure
     if "RPC/WMI" in open_services and VULN_CONFIG.get("check_rpc_mapper", True):
-        findings.append({
-            "cve_id": "RPC-DCOM-EXPOSURE",
-            "severity": "LOW",
-            "description": "Windows RPC Endpoint Mapper Port 135 Exposed"
-        })
+        findings.append({"cve_id": "RPC-DCOM-EXPOSURE", "severity": "LOW", "description": "Windows RPC Endpoint Mapper Port 135 Exposed"})
         VULNERABILITY_GAUGE.labels(target_ip=ip_str, cve_id="RPC-DCOM-EXPOSURE", severity="LOW", description="RPC Endpoint Mapper Port 135").set(1)
 
     return findings
@@ -325,14 +298,10 @@ def audit_windows_pc(ip_address: str, lab_name: str, username: str, password: st
             count = len(failed_logins)
             logging.warning(f"[SECURITY ALERT] {count} failed logon attempts on {ip_address} ({lab_name})")
             BRUTE_FORCE_COUNTER.labels(target_ip=ip_address, lab_name=lab_name).inc(count)
+            t_info = MITRE_TECHNIQUES["bruteforce"]
+            MITRE_ATTACK_GAUGE.labels(target_ip=ip_address, technique_id=t_info["technique_id"], technique_name=t_info["technique_name"], tactic=t_info["tactic"], severity=t_info["severity"]).set(1)
             if count >= 3:
-                dispatch_alert(
-                    "Brute-Force Logon Spikes Detected",
-                    f"{count} failed authentication events (Event 4625) recorded on {ip_address} in {lab_name}.",
-                    "CRITICAL",
-                    ip_address,
-                    "bruteforce"
-                )
+                dispatch_alert("Brute-Force Logon Spikes Detected", f"{count} failed authentication events (Event 4625) recorded on {ip_address} in {lab_name}.", "CRITICAL", ip_address, "bruteforce")
 
         # B. Check Running Processes against Blacklist
         processes = connection.Win32_Process()
@@ -343,13 +312,13 @@ def audit_windows_pc(ip_address: str, lab_name: str, username: str, password: st
             if p_name in SUSPICIOUS_LIST:
                 logging.warning(f"[SECURITY ALERT] Suspicious process '{p_name}' running on {ip_address} ({lab_name})")
                 SUSPICIOUS_PROC_GAUGE.labels(target_ip=ip_address, process_name=p_name, lab_name=lab_name).set(1)
-                dispatch_alert(
-                    "Blacklisted Process Execution",
-                    f"Suspicious binary '{p_name}' detected active on {ip_address} ({lab_name}).",
-                    "HIGH",
-                    ip_address,
-                    f"proc_{p_name}"
-                )
+                
+                # Map to MITRE
+                if p_name in MITRE_TECHNIQUES:
+                    t_info = MITRE_TECHNIQUES[p_name]
+                    MITRE_ATTACK_GAUGE.labels(target_ip=ip_address, technique_id=t_info["technique_id"], technique_name=t_info["technique_name"], tactic=t_info["tactic"], severity=t_info["severity"]).set(1)
+
+                dispatch_alert("Blacklisted Process Execution", f"Suspicious binary '{p_name}' detected active on {ip_address} ({lab_name}).", "HIGH", ip_address, f"proc_{p_name}")
 
         for s_proc in SUSPICIOUS_LIST:
             if s_proc not in running_names:
@@ -364,6 +333,11 @@ def audit_windows_pc(ip_address: str, lab_name: str, username: str, password: st
 def sweep_subnet(subnet_range: str, lab_name: str, arp_cache: Dict[str, str]) -> List[Dict[str, Any]]:
     logging.info(f"Sweeping {lab_name} [{subnet_range}]...")
     discovered = []
+    
+    if subnet_range not in ANOMALY_DETECTORS:
+        ANOMALY_DETECTORS[subnet_range] = LatencyAnomalyDetector(z_threshold=3.0)
+    detector = ANOMALY_DETECTORS[subnet_range]
+
     try:
         ips = [str(ip) for ip in ipaddress.IPv4Network(subnet_range, strict=False).hosts()]
         with ThreadPoolExecutor(max_workers=80) as executor:
@@ -374,28 +348,31 @@ def sweep_subnet(subnet_range: str, lab_name: str, arp_cache: Dict[str, str]) ->
             in_arp = ip in arp_cache
             if r["is_up"] or in_arp:
                 mac = arp_cache.get(ip, "Static/LAN")
-                vendor = resolve_vendor(mac)
+                vendor = lookup_mac_vendor(mac)
                 hostname = resolve_hostname(ip)
                 services_str = ", ".join(r["open_services"]) if r["open_services"] else "ICMP/ARP Only"
                 
+                # Check Statistical Z-Score Latency Anomaly
+                is_anomaly, z_val = detector.update(r["latency_ms"])
+                LATENCY_ANOMALY_GAUGE.labels(target_ip=ip, subnet=subnet_range).set(1 if is_anomaly else 0)
+
                 # Check Rogue / Unauthorized Device Whitelist
                 is_rogue = False
                 if ASSET_WHITELIST and mac != "Static/LAN":
                     if mac.lower() not in ASSET_WHITELIST and ip not in ASSET_WHITELIST:
                         is_rogue = True
                         ROGUE_DEVICE_GAUGE.labels(target_ip=ip, mac=mac, hostname=hostname, lab_name=lab_name).set(1)
-                        dispatch_alert(
-                            "Unauthorized Rogue Device Detected",
-                            f"Rogue machine {hostname} ({ip} / {mac}) connected to {lab_name}.",
-                            "HIGH",
-                            ip,
-                            "rogue"
-                        )
+                        dispatch_alert("Unauthorized Rogue Device Detected", f"Rogue machine {hostname} ({ip} / {mac}) connected to {lab_name}.", "HIGH", ip, "rogue")
                     else:
                         ROGUE_DEVICE_GAUGE.labels(target_ip=ip, mac=mac, hostname=hostname, lab_name=lab_name).set(0)
 
                 # Defensive Vulnerability & Exposure Audit
                 vulns = audit_vulnerabilities(ip, r["open_services"], lab_name)
+                vuln_ids = [v["cve_id"] for v in vulns]
+
+                # Compute CVSS 3.1 Quantitative Risk Score
+                risk_score = calculate_endpoint_risk_score(vuln_ids, [], 0, is_rogue)
+                ENDPOINT_RISK_SCORE.labels(target_ip=ip, hostname=hostname, subnet=subnet_range, lab_name=lab_name).set(risk_score)
 
                 ENDPOINT_STATUS_GAUGE.labels(
                     target_ip=ip,
@@ -422,6 +399,7 @@ def sweep_subnet(subnet_range: str, lab_name: str, arp_cache: Dict[str, str]) ->
                     "latency": r["latency_ms"],
                     "services": services_str,
                     "is_rogue": is_rogue,
+                    "risk_score": risk_score,
                     "vulnerabilities": vulns
                 })
                 
@@ -468,11 +446,10 @@ def start_monitoring():
         sweep_duration = round(time.time() - t_sweep_start, 2)
         SCAN_DURATION_GAUGE.set(sweep_duration)
         
-        # Calculate dynamic security posture rating (0-100)
         health_penalty = min(total_rogue * 15 + total_vulns * 5, 100)
         NETWORK_HEALTH_INDEX.set(max(100 - health_penalty, 0) if len(all_hosts) > 0 else 0)
         
-        logging.info(f"Cycle completed in {sweep_duration}s. Active: {len(all_hosts)} | Rogues: {total_rogue} | Vuln Risks: {total_vulns}")
+        logging.info(f"Cycle completed in {sweep_duration}s. Active: {len(all_hosts)} | Rogues: {total_rogue} | Vulns: {total_vulns}")
 
         for host in all_hosts:
             host_ip = host["ip"]
