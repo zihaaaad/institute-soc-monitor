@@ -30,6 +30,14 @@ prometheus-3.14.0.windows-amd64/data/
 *.wal
 *.lock
 
+# Secrets, site data and scan output - never commit (they map the network and its weaknesses)
+config.local.json
+.env
+asset_baseline.json
+logs/
+scratch/
+data/
+
 # IDE & OS
 .vscode/
 .idea/

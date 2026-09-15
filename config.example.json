@@ -1,49 +1,37 @@
 {
+  "_readme": "Copy site-specific overrides and ALL secrets into config.local.json (git-ignored) or MONITRO_* environment variables. Keys here override config.json.",
   "subnets": {
-    "192.168.1.0/24": "Main Lab",
-    "192.168.2.0/24": "Software Lab"
+    "192.168.10.0/24": "Main Lab",
+    "192.168.20.0/24": "Software Lab"
   },
   "credentials": {
-    "windows_user": "AuditUser",
-    "windows_password": "ExampleStrongPassword123"
-  },
-  "settings": {
-    "scan_interval_seconds": 60,
-    "metrics_port": 8000,
-    "prometheus_port": 9090,
-    "grafana_port": 3000
+    "windows_user": "CORP\\svc-monitro-audit",
+    "windows_password": "",
+    "windows_authority": ""
   },
   "asset_whitelist": [
-    "00:15:5d:00:00:01",
-    "34:5a:60:11:22:33"
+    "aa:bb:cc:dd:ee:01",
+    "aa:bb:cc:dd:ee:02"
   ],
   "alerts": {
-    "enabled": false,
-    "discord_webhook_url": "https://discord.com/api/webhooks/...",
-    "telegram_bot_token": "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ",
-    "telegram_chat_id": "987654321",
-    "alert_cooldown_seconds": 300
-  },
-  "vulnerability_audit": {
     "enabled": true,
-    "check_smbv1": true,
-    "check_rdp_exposure": true,
-    "check_cleartext_http": true,
-    "check_rpc_mapper": true
+    "discord_webhook_url": "",
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "alert_cooldown_seconds": 900,
+    "include_evidence": false
   },
   "wmi_audit": {
     "enabled": true,
-    "brute_force_threshold": 5
+    "audit_unverified_hosts": false
   },
-  "suspicious_processes": [
-    "mimikatz.exe",
-    "psexec.exe",
-    "netcat.exe",
-    "nc.exe",
-    "nmap.exe",
-    "wireshark.exe",
-    "tor.exe",
-    "anydesk.exe",
-    "teamviewer.exe"
-  ]
+  "extra_commandline_patterns": [
+    "(?i)\\bwhoami\\s+/priv\\b"
+  ],
+  "dashboard": {
+    "bind_address": "127.0.0.1",
+    "port": 5000,
+    "username": "",
+    "password": ""
+  }
 }

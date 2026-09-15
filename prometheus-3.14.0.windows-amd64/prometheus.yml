@@ -26,15 +26,17 @@ scrape_configs:
     # scheme defaults to 'http'.
 
     static_configs:
-      - targets: ["localhost:9090"]
+      - targets: ["127.0.0.1:9090"]
        # The label name is added as a label `label_name=<label_value>` to any timeseries scraped from this config.
         labels:
           app: "prometheus"
     scrape_native_histograms: true
 
+  # Monitro exporter. Bound to loopback; data only changes once per sweep, so 30s is plenty.
   - job_name: "python_security_monitor"
-    scrape_interval: 5s
+    scrape_interval: 30s
+    scrape_timeout: 20s
     static_configs:
-      - targets: ["localhost:8000"]
+      - targets: ["127.0.0.1:8000"]
 
 

@@ -47,8 +47,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "prometheus_url": "http://127.0.0.1:9090",
         "grafana_url": "http://127.0.0.1:3000",
         "probe_timeout_seconds": 0.25,
-        "probe_workers": 128,
-        "dns_timeout_seconds": 2.0,
+        "probe_workers": 256,
+        "service_scan_interval_seconds": 900,
     },
     "asset_whitelist": [],
     "alerts": {
@@ -57,6 +57,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "telegram_bot_token": "",
         "telegram_chat_id": "",
         "alert_cooldown_seconds": 900,
+        "include_evidence": False,
     },
     "vulnerability_audit": {
         "enabled": True,
@@ -261,7 +262,7 @@ def load_config(
         settings["metrics_port"] = int(settings["metrics_port"])
         settings["probe_timeout_seconds"] = min(max(float(settings["probe_timeout_seconds"]), 0.05), 5.0)
         settings["probe_workers"] = min(max(int(settings["probe_workers"]), 1), 512)
-        settings["dns_timeout_seconds"] = min(max(float(settings["dns_timeout_seconds"]), 0.1), 10.0)
+        settings["service_scan_interval_seconds"] = max(60, int(settings["service_scan_interval_seconds"]))
     except (TypeError, ValueError) as e:
         raise ConfigError(f"Invalid value in 'settings': {e}") from e
 

@@ -1,632 +1,134 @@
+"""Monitro agentless network security monitor (Prometheus exporter).
+
+Usage:
+  python src\\agentless_monitor_win.py                    run continuously
+  python src\\agentless_monitor_win.py --once             one sweep, print JSON summary
+  python src\\agentless_monitor_win.py --export-baseline  one sweep, write asset_baseline.json for review
+"""
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import json
+import logging
+import logging.handlers
 import os
 import sys
 import time
-import json
-import threading
-import logging
-import subprocess
-import re
-import socket
-import ipaddress
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Any, Set, Tuple
-from prometheus_client import start_http_server, Gauge, Counter
-import pythoncom
-import wmi
-import ctypes
 
-from config_loader import load_config, BASE_DIR
-from oui_database import lookup_mac_vendor
-from threat_intel import MITRE_TECHNIQUES, calculate_endpoint_risk_score, LatencyAnomalyDetector
+from prometheus_client import start_http_server
+from prometheus_client.core import REGISTRY
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
-log = logging.getLogger("monitro.engine")
+from alerting import AlertDispatcher
+from config_loader import BASE_DIR, LOG_DIR, ConfigError, load_config
+from engine import SweepEngine, build_host_views, summarize
+from metrics_collector import SocCollector
+from wmi_audit import WmiAuditor
 
-config = load_config()
-SUBNET_LAB_MAPPING = config.get("subnets", {})
-WINDOWS_USER = config.get("credentials", {}).get("windows_user", "")
-WINDOWS_PASS = config.get("credentials", {}).get("windows_password", "")
-SCAN_INTERVAL_SECONDS = config.get("settings", {}).get("scan_interval_seconds", 60)
-PROMETHEUS_PORT = config.get("settings", {}).get("metrics_port", 8000)
+log = logging.getLogger("monitro")
+BASELINE_PATH = os.path.join(BASE_DIR, "asset_baseline.json")
 
-ASSET_WHITELIST = set(m.lower().replace("-", ":") for m in config.get("asset_whitelist", []))
-ALERTS_CONFIG = config.get("alerts", {})
-VULN_CONFIG = config.get("vulnerability_audit", {})
-WMI_CONFIG = config.get("wmi_audit", {})
-SUSPICIOUS_LIST = [p.lower() for p in config.get("suspicious_processes", [])]
 
-# State tracking for metric lifecycle management (prevents cardinality leak)
-ACTIVE_STATUS_LABELS: Set[Tuple[str, str, str, str, str, str, str]] = set()
-ACTIVE_VULN_LABELS: Set[Tuple[str, str, str, str]] = set()
-ACTIVE_ROGUE_LABELS: Set[Tuple[str, str, str, str]] = set()
-ACTIVE_MITRE_LABELS: Set[Tuple[str, str, str, str, str]] = set()
-ACTIVE_RISK_LABELS: Set[Tuple[str, str, str, str]] = set()
-ACTIVE_PORT_LABELS: Set[Tuple[str, str, str]] = set()
-ACTIVE_LATENCY_LABELS: Set[Tuple[str, str, str]] = set()
+def setup_logging(level: str) -> None:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    file_handler = logging.handlers.RotatingFileHandler(
+        os.path.join(LOG_DIR, "monitor.log"), maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+    file_handler.setFormatter(fmt)
+    root.handlers = [console, file_handler]
 
-# Anomaly Detector per subnet
-ANOMALY_DETECTORS: Dict[str, LatencyAnomalyDetector] = {}
-ALERT_LOCK = threading.Lock()
-ALERT_COOLDOWN_MAP: Dict[str, float] = {}
 
-# Monitored Port Services across All Connected Device Categories (PCs, Servers, Routers, Printers, Cameras, VoIP, IoT)
-PORT_SERVICE_MAP = {
-    # Windows & Active Directory
-    135: "RPC/WMI",
-    139: "NetBIOS",
-    445: "SMB/Shares",
-    3389: "RDP/Remote",
-    5985: "WinRM",
-    
-    # Web & Management Interfaces
-    80: "HTTP",
-    443: "HTTPS",
-    8080: "HTTP-Proxy",
-    8443: "HTTPS-Admin",
-    8000: "Web-App",
-    8888: "Web-Admin",
-    
-    # Remote Management & Shells
-    22: "SSH",
-    23: "Telnet",
-    21: "FTP",
-    5900: "VNC",
-    
-    # Network Infrastructure
-    53: "DNS",
-    161: "SNMP",
-    
-    # Surveillance & IP Cameras
-    554: "RTSP-Camera",
-    8899: "ONVIF-Camera",
-    
-    # Network Printers & Peripherals
-    9100: "JetDirect-Printer",
-    631: "IPP-Printer",
-    
-    # Telephony & Database Services
-    5060: "SIP-VoIP",
-    1433: "MSSQL",
-    3306: "MySQL",
-    5432: "PostgreSQL"
-}
-
-# ---------------------------------------------------------
-# Prometheus Metrics Setup
-# ---------------------------------------------------------
-TOTAL_ENDPOINTS_GAUGE = Gauge("total_active_endpoints", "Total active computers discovered across all labs")
-TOTAL_THREATS_GAUGE = Gauge("total_threat_endpoints", "Total endpoints flagged with security alerts")
-TOTAL_ROGUE_DEVICES_GAUGE = Gauge("total_rogue_devices", "Total unauthorized or rogue devices detected")
-TOTAL_VULNERABILITIES_GAUGE = Gauge("total_vulnerabilities_detected", "Total active vulnerability and exposure risks")
-NETWORK_HEALTH_INDEX = Gauge("network_health_index", "Calculated overall network health percentage (0-100)")
-ACTIVE_HOSTS_GAUGE = Gauge("active_network_hosts", "Active hosts count per lab subnet", ["subnet", "lab_name"])
-LAB_THREAT_GAUGE = Gauge("lab_threat_count", "Threat count per lab subnet", ["subnet", "lab_name"])
-
-ENDPOINT_STATUS_GAUGE = Gauge(
-    "endpoint_status",
-    "Endpoint online status and hardware inventory",
-    ["target_ip", "hostname", "subnet", "lab_name", "mac", "vendor", "open_services"]
-)
-ENDPOINT_LATENCY_GAUGE = Gauge("endpoint_latency_ms", "Endpoint round-trip network response time", ["target_ip", "subnet", "lab_name"])
-ENDPOINT_PORT_EXPOSURE = Gauge("endpoint_port_exposure", "Count of exposed management & service ports", ["target_ip", "subnet", "service"])
-
-# Open-Source MITRE ATT&CK & CVSS Risk Metrics
-ENDPOINT_RISK_SCORE = Gauge("endpoint_risk_score", "Calculated CVSS v3.1 quantitative risk score (0-100)", ["target_ip", "hostname", "subnet", "lab_name"])
-MITRE_ATTACK_GAUGE = Gauge("mitre_attack_technique", "MITRE ATT&CK mapped security technique active", ["target_ip", "technique_id", "technique_name", "tactic", "severity"])
-LATENCY_ANOMALY_GAUGE = Gauge("network_latency_anomaly", "Statistical Z-Score anomaly flag (>3 sigma)", ["target_ip", "subnet"])
-
-# Security Incident & Threat Gauges
-ROGUE_DEVICE_GAUGE = Gauge("rogue_device_detected", "Rogue or unauthorized device flag", ["target_ip", "mac", "hostname", "lab_name"])
-VULNERABILITY_GAUGE = Gauge("vulnerability_exposure", "Vulnerability & exposure audit flags", ["target_ip", "cve_id", "severity", "description"])
-BRUTE_FORCE_COUNTER = Counter("brute_force_attempts_total", "Failed logons detected (Event ID 4625)", ["target_ip", "lab_name"])
-SUSPICIOUS_PROC_GAUGE = Gauge("suspicious_process_detected", "Suspicious process execution flag", ["target_ip", "process_name", "lab_name"])
-SCAN_DURATION_GAUGE = Gauge("network_scan_duration_seconds", "Duration of network sweep in seconds")
-
-# ---------------------------------------------------------
-# Multi-Channel Webhook Alerting
-# ---------------------------------------------------------
-def dispatch_alert(title: str, message: str, severity: str, target_ip: str, alert_type: str):
-    if not ALERTS_CONFIG.get("enabled", False):
-        return
-
-    cooldown_seconds = ALERTS_CONFIG.get("alert_cooldown_seconds", 300)
-    key = f"{target_ip}:{alert_type}"
-    now = time.time()
-    
-    with ALERT_LOCK:
-        if key in ALERT_COOLDOWN_MAP and (now - ALERT_COOLDOWN_MAP[key]) < cooldown_seconds:
-            return
-        ALERT_COOLDOWN_MAP[key] = now
-
-    def _send():
-        # 1. Discord Webhook
-        discord_url = ALERTS_CONFIG.get("discord_webhook_url", "").strip()
-        if discord_url:
-            try:
-                payload = {
-                    "username": "Institute Cyber SOC Monitor",
-                    "embeds": [{
-                        "title": f"[{severity.upper()}] {title}",
-                        "description": message,
-                        "color": 15158332 if severity.upper() in ["CRITICAL", "HIGH"] else 15844367,
-                        "fields": [
-                            {"name": "Target IP", "value": target_ip, "inline": True},
-                            {"name": "Timestamp", "value": time.strftime("%Y-%m-%d %H:%M:%S"), "inline": True}
-                        ]
-                    }]
-                }
-                req = urllib.request.Request(discord_url, method="POST", data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=5)
-            except Exception as e:
-                log.error(f"Failed to send Discord alert: {e}")
-
-        # 2. Telegram Bot API
-        tg_token = ALERTS_CONFIG.get("telegram_bot_token", "").strip()
-        tg_chat = ALERTS_CONFIG.get("telegram_chat_id", "").strip()
-        if tg_token and tg_chat:
-            try:
-                tg_text = f"[{severity.upper()}] {title}\n{message}\nTarget IP: {target_ip}\nTime: {time.strftime('%Y-%m-%d %H:%M:%S')}"
-                tg_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
-                tg_payload = {"chat_id": tg_chat, "text": tg_text}
-                req = urllib.request.Request(tg_url, method="POST", data=json.dumps(tg_payload).encode("utf-8"), headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=5)
-            except Exception as e:
-                log.error(f"Failed to send Telegram alert: {e}")
-
-    threading.Thread(target=_send, daemon=True).start()
-
-# ---------------------------------------------------------
-# Network Probing Utilities
-# ---------------------------------------------------------
-def get_arp_cache() -> Dict[str, str]:
-    try:
-        out = subprocess.check_output('arp -a', shell=True).decode('cp1252', errors='ignore')
-        arp_map = {}
-        for line in out.splitlines():
-            m = re.search(r'([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s+([0-9a-fA-F\-]{17})', line)
-            if m:
-                arp_map[m.group(1)] = m.group(2).replace('-', ':').lower()
-        return arp_map
-    except Exception:
-        return {}
-
-def resolve_hostname(ip: str) -> str:
-    try:
-        return socket.gethostbyaddr(ip)[0]
-    except Exception:
-        return f"PC-{ip.split('.')[-1]}"
-
-def make_smbv1_negotiate_packet() -> bytes:
-    """Constructs a valid, RFC-compliant SMBv1 Negotiate Protocol Request."""
-    dialects = b"\x02NT LM 0.12\x00\x02SMB 2.002\x00"
-    byte_count = len(dialects)
-    word_count = 0
-    smb_header = (
-        b"\xff\x53\x4d\x42"  # Protocol: \xffSMB
-        b"\x72"              # Command: 0x72 (Negotiate Protocol)
-        b"\x00\x00\x00\x00"  # NT Status: STATUS_SUCCESS
-        b"\x18"              # Flags: Canonicalized, Caseless
-        b"\x53\xc8"          # Flags2: Unicode, NT Status, Extended Security
-        b"\x00\x00"          # PID High
-        b"\x00\x00\x00\x00\x00\x00\x00\x00"  # Signature
-        b"\x00\x00"          # Reserved
-        b"\x00\x00"          # TID
-        b"\x00\x00"          # PID
-        b"\x00\x00"          # UID
-        b"\x00\x00"          # MID
-    )
-    smb_payload = smb_header + bytes([word_count]) + byte_count.to_bytes(2, "little") + dialects
-    netbios_header = b"\x00" + len(smb_payload).to_bytes(3, "big")
-    return netbios_header + smb_payload
-
-def check_smbv1(ip_str: str) -> bool:
-    """Defensive check to inspect whether target host accepts legacy SMBv1 negotiate."""
-    try:
-        packet = make_smbv1_negotiate_packet()
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.35)
-            s.connect((ip_str, 445))
-            s.sendall(packet)
-            response = s.recv(1024)
-            # Valid SMBv1 response has \xffSMB at offset 4 and Negotiate command 0x72 at offset 8
-            if len(response) >= 9 and response[4:8] == b'\xffSMB' and response[8] == 0x72:
-                return True
-    except Exception:
-        pass
-    return False
-
-def audit_vulnerabilities(ip_str: str, open_services: List[str], lab_name: str) -> List[Dict[str, str]]:
-    if not VULN_CONFIG.get("enabled", True):
-        return []
-
-    findings = []
-    
-    # 1. SMBv1 Legacy Protocol (MS17-010 Risk)
-    if "SMB/Shares" in open_services and VULN_CONFIG.get("check_smbv1", True):
-        if check_smbv1(ip_str):
-            findings.append({"cve_id": "SMBV1-ENABLED", "severity": "HIGH", "description": "Legacy SMBv1 Protocol Active on Port 445"})
-            dispatch_alert("Legacy SMBv1 Protocol Detected", f"Host {ip_str} in {lab_name} has SMBv1 enabled. Vulnerable to lateral movement.", "HIGH", ip_str, "smbv1")
-
-    # 2. Exposed RDP Management Port
-    if "RDP/Remote" in open_services and VULN_CONFIG.get("check_rdp_exposure", True):
-        findings.append({"cve_id": "RDP-EXPOSURE", "severity": "MEDIUM", "description": "Exposed Remote Desktop Port 3389"})
-
-    # 3. Unencrypted Cleartext HTTP Service
-    if "HTTP" in open_services and VULN_CONFIG.get("check_cleartext_protocols", True):
-        findings.append({"cve_id": "HTTP-CLEARTEXT", "severity": "LOW", "description": "Unencrypted HTTP Port 80 Active"})
-
-    # 4. RPC / DCOM Port Exposure
-    if "RPC/WMI" in open_services and VULN_CONFIG.get("check_rpc_mapper", True):
-        findings.append({"cve_id": "RPC-EXPOSURE", "severity": "INFO", "description": "Windows RPC Endpoint Mapper Port 135 Exposed"})
-
-    return findings
-
-HOSTNAME_CACHE: Dict[str, str] = {}
-
-def get_mac_sendarp(ip_str: str) -> str:
-    try:
-        inetaddr = ctypes.c_ulong()
-        ctypes.windll.ws2_32.inet_pton(socket.AF_INET, ip_str.encode("utf-8"), ctypes.byref(inetaddr))
-        mac_addr = (ctypes.c_ubyte * 6)()
-        mac_len = ctypes.c_ulong(6)
-        res = ctypes.windll.iphlpapi.SendARP(inetaddr, 0, ctypes.byref(mac_addr), ctypes.byref(mac_len))
-        if res == 0:
-            return ":".join(f"{b:02X}" for b in bytearray(mac_addr))
-    except Exception:
-        pass
-    return ""
-
-def netbios_name_lookup(ip: str) -> str:
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(0.12)
-        req = b'\x80\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00 CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\x00\x00!\x00\x01'
-        s.sendto(req, (ip, 137))
-        data, _ = s.recvfrom(1024)
-        s.close()
-        if len(data) > 57:
-            num_names = data[56]
-            offset = 57
-            for _ in range(num_names):
-                name = data[offset:offset+15].decode("latin-1", errors="ignore").strip()
-                name_type = data[offset+15]
-                offset += 18
-                if name_type == 0x00 and name and not name.startswith("__MSBROWSE__"):
-                    return name
-    except Exception:
-        pass
-    return ""
-
-def resolve_hostname(ip: str) -> str:
-    if ip in HOSTNAME_CACHE:
-        return HOSTNAME_CACHE[ip]
-    nb = netbios_name_lookup(ip)
-    if nb:
-        HOSTNAME_CACHE[ip] = nb
-        return nb
-    try:
-        h = socket.gethostbyaddr(ip)[0]
-        HOSTNAME_CACHE[ip] = h
-        return h
-    except Exception:
-        h = f"PC-{ip.split('.')[-1]}"
-        HOSTNAME_CACHE[ip] = h
-        return h
-
-def probe_host(ip_str: str) -> Dict[str, Any]:
-    open_services = []
-    t_start = time.time()
-    is_up = False
-    responding_latencies = []
-    
-    # 1. Win32 SendARP check for instant local L2 resolution
-    mac = get_mac_sendarp(ip_str)
-    if mac:
-        is_up = True
-
-    # 2. Probe active TCP services
-    for port, service_name in PORT_SERVICE_MAP.items():
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.08)
-                p_start = time.time()
-                res = s.connect_ex((ip_str, port))
-                if res == 0:
-                    is_up = True
-                    open_services.append(service_name)
-                    responding_latencies.append((time.time() - p_start) * 1000)
-        except Exception:
-            pass
-
-    if responding_latencies:
-        latency_ms = min(responding_latencies)
-    elif is_up:
-        latency_ms = (time.time() - t_start) * 1000
-    else:
-        latency_ms = 0.0
-
-    hostname = resolve_hostname(ip_str) if is_up else ""
-
-    return {
-        "ip": ip_str,
-        "is_up": is_up,
-        "mac": mac,
-        "hostname": hostname,
-        "latency_ms": round(latency_ms, 2),
-        "open_services": open_services
+def export_baseline(engine: SweepEngine, path: str = BASELINE_PATH) -> int:
+    snapshot = engine.run_cycle()
+    devices = sorted(
+        ({"mac": h.mac, "ip": h.ip, "hostname": h.hostname, "vendor": h.vendor, "lab_name": h.lab_name}
+         for h in snapshot.hosts.values() if h.mac),
+        key=lambda d: d["ip"])
+    payload = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "note": "REVIEW EVERY ENTRY before trusting it: a rogue device present today would be whitelisted. "
+                "Only devices on subnets local to this sensor have visible MACs.",
+        "devices": devices,
+        "asset_whitelist": sorted({d["mac"] for d in devices}),
     }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    print(f"Wrote {len(devices)} devices with visible MACs to {path}")
+    print("After review, copy the 'asset_whitelist' array into config.local.json.")
+    return 0
 
 
-# ---------------------------------------------------------
-# Agentless WMI Security Audit (Safe & Thread-Initialized)
-# ---------------------------------------------------------
-def audit_windows_pc(ip_address: str, lab_name: str, username: str, password: str, is_approved: bool):
-    # Security Rule: Never send admin credentials to unverified / rogue devices
-    if not password or not username or not is_approved or not WMI_CONFIG.get("enabled", True):
-        return
+def run_forever(config: dict, engine: SweepEngine, auditor: WmiAuditor) -> int:
+    settings = config["settings"]
+    bind = settings["metrics_bind_address"]
+    port = settings["metrics_port"]
+    REGISTRY.register(SocCollector(engine, auditor))
     try:
-        pythoncom.CoInitialize()
-        try:
-            connection = wmi.WMI(ip_address, user=username, password=password)
-            
-            # 1. Query Failed Logons (Event 4625)
-            wql = "SELECT TimeGenerated, Message FROM Win32_NTLogEvent WHERE Logfile='Security' AND EventCode='4625'"
-            try:
-                failed_logins = connection.query(wql)
-                if failed_logins:
-                    count = len(failed_logins)
-                    BRUTE_FORCE_COUNTER.labels(target_ip=ip_address, lab_name=lab_name).inc(count)
-                    t_info = MITRE_TECHNIQUES.get("BRUTE-FORCE", {})
-                    if t_info:
-                        MITRE_ATTACK_GAUGE.labels(target_ip=ip_address, technique_id=t_info["technique_id"], technique_name=t_info["technique_name"], tactic=t_info["tactic"], severity=t_info["severity"]).set(1)
-                    if count >= WMI_CONFIG.get("brute_force_threshold", 10):
-                        dispatch_alert("Brute-Force Logon Spikes Detected", f"{count} failed authentication events on {ip_address} in {lab_name}.", "CRITICAL", ip_address, "bruteforce")
-            except Exception as e:
-                log.debug(f"WMI Event 4625 query failed on {ip_address}: {e}")
-
-            # 2. Check Running Processes against Blacklist
-            try:
-                processes = connection.Win32_Process(["Name", "ProcessId"])
-                running_names = set((proc.Name or "").lower() for proc in processes)
-                for s_proc in SUSPICIOUS_LIST:
-                    if s_proc in running_names:
-                        SUSPICIOUS_PROC_GAUGE.labels(target_ip=ip_address, process_name=s_proc, lab_name=lab_name).set(1)
-                        if s_proc in MITRE_TECHNIQUES:
-                            t_info = MITRE_TECHNIQUES[s_proc]
-                            MITRE_ATTACK_GAUGE.labels(target_ip=ip_address, technique_id=t_info["technique_id"], technique_name=t_info["technique_name"], tactic=t_info["tactic"], severity=t_info["severity"]).set(1)
-                        dispatch_alert("Blacklisted Process Execution", f"Process '{s_proc}' detected active on {ip_address} ({lab_name}).", "HIGH", ip_address, f"proc_{s_proc}")
-                    else:
-                        SUSPICIOUS_PROC_GAUGE.labels(target_ip=ip_address, process_name=s_proc, lab_name=lab_name).set(0)
-            except Exception as e:
-                log.debug(f"WMI Process query failed on {ip_address}: {e}")
-
-        finally:
-            pythoncom.CoUninitialize()
-    except Exception as e:
-        log.debug(f"WMI connection failed on {ip_address}: {e}")
-
-# ---------------------------------------------------------
-# Subnet Scanner Engine
-# ---------------------------------------------------------
-def sweep_subnet(subnet_range: str, lab_name: str, arp_cache: Dict[str, str]) -> List[Dict[str, Any]]:
-    log.info(f"Sweeping {lab_name} [{subnet_range}]...")
-    discovered = []
-    
-    if subnet_range not in ANOMALY_DETECTORS:
-        ANOMALY_DETECTORS[subnet_range] = LatencyAnomalyDetector(z_threshold=3.0)
-    detector = ANOMALY_DETECTORS[subnet_range]
-
-    try:
-        ips = [str(ip) for ip in ipaddress.IPv4Network(subnet_range, strict=False).hosts()]
-        with ThreadPoolExecutor(max_workers=config.get("settings", {}).get("probe_workers", 80)) as executor:
-            probe_results = list(executor.map(probe_host, ips))
-            
-        for r in probe_results:
-            ip = r["ip"]
-            in_arp = ip in arp_cache
-            if r["is_up"] or in_arp:
-                mac = r.get("mac") or arp_cache.get(ip, "Static/LAN")
-                vendor = lookup_mac_vendor(mac)
-                hostname = r.get("hostname") or resolve_hostname(ip)
-                services_str = ", ".join(r["open_services"]) if r["open_services"] else "ICMP/ARP Only"
-                
-                # Check Statistical Z-Score Latency Anomaly
-                if r["latency_ms"] > 0:
-                    is_anomaly, z_val = detector.update(r["latency_ms"])
-                    LATENCY_ANOMALY_GAUGE.labels(target_ip=ip, subnet=subnet_range).set(1 if is_anomaly else 0)
-
-                # Check Rogue / Unauthorized Device Whitelist
-                is_rogue = False
-                is_approved = True
-                if ASSET_WHITELIST and mac != "Static/LAN":
-                    if mac.lower() not in ASSET_WHITELIST and ip not in ASSET_WHITELIST:
-                        is_rogue = True
-                        is_approved = False
-                        ROGUE_DEVICE_GAUGE.labels(target_ip=ip, mac=mac, hostname=hostname, lab_name=lab_name).set(1)
-                        ACTIVE_ROGUE_LABELS.add((ip, mac, hostname, lab_name))
-                        dispatch_alert("Unauthorized Rogue Device Detected", f"Rogue machine {hostname} ({ip} / {mac}) connected to {lab_name}.", "HIGH", ip, "rogue")
-                    else:
-                        ROGUE_DEVICE_GAUGE.labels(target_ip=ip, mac=mac, hostname=hostname, lab_name=lab_name).set(0)
-
-                # Defensive Vulnerability & Exposure Audit
-                vulns = audit_vulnerabilities(ip, r["open_services"], lab_name)
-                vuln_ids = [v["cve_id"] for v in vulns]
-
-                for v in vulns:
-                    VULNERABILITY_GAUGE.labels(target_ip=ip, cve_id=v["cve_id"], severity=v["severity"], description=v["description"]).set(1)
-                    ACTIVE_VULN_LABELS.add((ip, v["cve_id"], v["severity"], v["description"]))
-
-                    mitre_info = MITRE_TECHNIQUES.get(v["cve_id"])
-                    if mitre_info:
-                        tech_id = str(mitre_info.get("technique_id", "N/A"))
-                        tech_name = str(mitre_info.get("technique_name", "Unknown"))
-                        tactic = str(mitre_info.get("tactic", "Security Risk"))
-                        sev = str(mitre_info.get("severity", v["severity"]))
-                        MITRE_ATTACK_GAUGE.labels(target_ip=ip, technique_id=tech_id, technique_name=tech_name, tactic=tactic, severity=sev).set(1)
-                        ACTIVE_MITRE_LABELS.add((ip, tech_id, tech_name, tactic, sev))
-
-                # Compute CVSS 3.1 Quantitative Risk Score
-                risk_score = calculate_endpoint_risk_score(vuln_ids, is_rogue=is_rogue)
-                ENDPOINT_RISK_SCORE.labels(target_ip=ip, hostname=hostname, subnet=subnet_range, lab_name=lab_name).set(risk_score)
-                ACTIVE_RISK_LABELS.add((ip, hostname, subnet_range, lab_name))
-
-                # Update Prometheus Metrics
-                status_tuple = (ip, hostname, subnet_range, lab_name, mac, vendor, services_str)
-                ENDPOINT_STATUS_GAUGE.labels(*status_tuple).set(1)
-                ACTIVE_STATUS_LABELS.add(status_tuple)
-                
-                ENDPOINT_LATENCY_GAUGE.labels(target_ip=ip, subnet=subnet_range, lab_name=lab_name).set(r["latency_ms"])
-                ACTIVE_LATENCY_LABELS.add((ip, subnet_range, lab_name))
-                
-                for srv in r["open_services"]:
-                    ENDPOINT_PORT_EXPOSURE.labels(target_ip=ip, subnet=subnet_range, service=srv).set(1)
-                    ACTIVE_PORT_LABELS.add((ip, subnet_range, srv))
-                
-                discovered.append({
-                    "ip": ip,
-                    "subnet": subnet_range,
-                    "lab_name": lab_name,
-                    "mac": mac,
-                    "vendor": vendor,
-                    "hostname": hostname,
-                    "latency": r["latency_ms"],
-                    "services": services_str,
-                    "is_rogue": is_rogue,
-                    "is_approved": is_approved,
-                    "risk_score": risk_score,
-                    "vulnerabilities": vulns
-                })
-                
-        ACTIVE_HOSTS_GAUGE.labels(subnet=subnet_range, lab_name=lab_name).set(len(discovered))
-        return discovered
-    except Exception as e:
-        log.error(f"Error scanning subnet {subnet_range}: {e}")
-        return []
-
-# ---------------------------------------------------------
-# Main Monitoring Loop
-# ---------------------------------------------------------
-def start_monitoring():
-    log.info("Starting Universal Agentless Security Engine...")
-    
-    used_port = PROMETHEUS_PORT
-    try:
-        start_http_server(used_port, addr="0.0.0.0")
-        log.info(f"Prometheus Metrics Exporter running at http://0.0.0.0:{used_port}/metrics")
+        start_http_server(port, addr=bind)
     except OSError as e:
-        log.error(f"Cannot bind metrics port {used_port}: {e}. Ensure no other instance is running.")
-        sys.exit(1)
+        log.critical("Cannot bind metrics endpoint %s:%d (%s). Is another instance running?", bind, port, e)
+        return 1
+    log.info("Metrics exporter listening on http://%s:%d/metrics", bind, port)
+    try:
+        if not ipaddress.ip_address(bind).is_loopback:
+            log.warning("SECURITY: metrics are exposed on %s. They contain a full network inventory and exposure "
+                        "map and have no authentication; restrict with a host firewall.", bind)
+    except ValueError:
+        pass
 
-    previous_status_labels: Set[Tuple[str, str, str, str, str, str, str]] = set()
-    previous_mitre_labels: Set[Tuple[str, str, str, str, str]] = set()
-    previous_vuln_labels: Set[Tuple[str, str, str, str]] = set()
-    previous_rogue_labels: Set[Tuple[str, str, str, str]] = set()
-    previous_risk_labels: Set[Tuple[str, str, str, str]] = set()
-    previous_latency_labels: Set[Tuple[str, str, str]] = set()
-    previous_port_labels: Set[Tuple[str, str, str]] = set()
-
+    interval = settings["scan_interval_seconds"]
     while True:
-        t_sweep_start = time.time()
-        arp_cache = get_arp_cache()
-        all_hosts = []
-        total_rogue = 0
-        total_vulns = 0
-        
-        # Reset current cycle label sets
-        ACTIVE_STATUS_LABELS.clear()
-        ACTIVE_VULN_LABELS.clear()
-        ACTIVE_ROGUE_LABELS.clear()
-        ACTIVE_MITRE_LABELS.clear()
-        ACTIVE_RISK_LABELS.clear()
-        ACTIVE_LATENCY_LABELS.clear()
-        ACTIVE_PORT_LABELS.clear()
-        
-        def _sweep_worker(item):
-            sub, lab = item
-            return sweep_subnet(sub, lab, arp_cache)
+        started = time.monotonic()
+        try:
+            snapshot = engine.run_cycle()
+            views = build_host_views(snapshot, {}, time.time(), 0)
+            auditor.submit(views)
+            if snapshot.duration > interval:
+                log.warning("Sweep took %.0fs, longer than scan_interval_seconds=%d. Reduce subnets or raise the interval.",
+                            snapshot.duration, interval)
+        except Exception:
+            log.exception("Sweep cycle failed; retrying next interval")
+        time.sleep(max(1.0, interval - (time.monotonic() - started)))
 
-        with ThreadPoolExecutor(max_workers=6) as subnet_pool:
-            results = list(subnet_pool.map(_sweep_worker, SUBNET_LAB_MAPPING.items()))
-            for hosts in results:
-                all_hosts.extend(hosts)
-            
-        for h in all_hosts:
-            if h.get("is_rogue"):
-                total_rogue += 1
-            total_vulns += len(h.get("vulnerabilities", []))
 
-        # Metric lifecycle: Clean up disappearing hosts / stale labels
-        for old_tuple in previous_status_labels - ACTIVE_STATUS_LABELS:
-            try:
-                ENDPOINT_STATUS_GAUGE.remove(*old_tuple)
-            except KeyError:
-                pass
-        previous_status_labels = set(ACTIVE_STATUS_LABELS)
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Monitro agentless network security monitor")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--once", action="store_true", help="run a single sweep and print a JSON summary")
+    mode.add_argument("--export-baseline", action="store_true", help="run a sweep and write asset_baseline.json")
+    parser.add_argument("--log-level", default="INFO")
+    args = parser.parse_args(argv)
 
-        for old_tuple in previous_mitre_labels - ACTIVE_MITRE_LABELS:
-            try:
-                MITRE_ATTACK_GAUGE.remove(*old_tuple)
-            except KeyError:
-                pass
-        previous_mitre_labels = set(ACTIVE_MITRE_LABELS)
+    setup_logging(args.log_level)
+    try:
+        config = load_config()
+    except ConfigError as e:
+        log.critical("Configuration error: %s", e)
+        return 2
 
-        for old_tuple in previous_vuln_labels - ACTIVE_VULN_LABELS:
-            try:
-                VULNERABILITY_GAUGE.remove(*old_tuple)
-            except KeyError:
-                pass
-        previous_vuln_labels = set(ACTIVE_VULN_LABELS)
+    dispatcher = AlertDispatcher(config["alerts"])
+    engine = SweepEngine(config, alert_sink=dispatcher.dispatch)
+    auditor = WmiAuditor(config, alert_sink=dispatcher.dispatch)
 
-        for old_tuple in previous_rogue_labels - ACTIVE_ROGUE_LABELS:
-            try:
-                ROGUE_DEVICE_GAUGE.remove(*old_tuple)
-            except KeyError:
-                pass
-        previous_rogue_labels = set(ACTIVE_ROGUE_LABELS)
+    try:
+        if args.export_baseline:
+            return export_baseline(engine)
+        if args.once:
+            snapshot = engine.run_cycle()
+            views = build_host_views(snapshot, {}, time.time(), 0)
+            print(json.dumps({"duration_seconds": snapshot.duration, **summarize(views)}, indent=2))
+            return 0
+        return run_forever(config, engine, auditor)
+    except KeyboardInterrupt:
+        log.info("Stopped by user")
+        return 0
+    finally:
+        auditor.shutdown()
 
-        for old_tuple in previous_risk_labels - ACTIVE_RISK_LABELS:
-            try:
-                ENDPOINT_RISK_SCORE.remove(*old_tuple)
-            except KeyError:
-                pass
-        previous_risk_labels = set(ACTIVE_RISK_LABELS)
-
-        for old_tuple in previous_latency_labels - ACTIVE_LATENCY_LABELS:
-            try:
-                ENDPOINT_LATENCY_GAUGE.remove(*old_tuple)
-            except KeyError:
-                pass
-        previous_latency_labels = set(ACTIVE_LATENCY_LABELS)
-
-        for old_tuple in previous_port_labels - ACTIVE_PORT_LABELS:
-            try:
-                ENDPOINT_PORT_EXPOSURE.remove(*old_tuple)
-            except KeyError:
-                pass
-        previous_port_labels = set(ACTIVE_PORT_LABELS)
-
-        TOTAL_ENDPOINTS_GAUGE.set(len(all_hosts))
-        TOTAL_ROGUE_DEVICES_GAUGE.set(total_rogue)
-        TOTAL_VULNERABILITIES_GAUGE.set(total_vulns)
-        sweep_duration = round(time.time() - t_sweep_start, 2)
-        SCAN_DURATION_GAUGE.set(sweep_duration)
-        
-        # Health Index calculation: Only severe threats (SMBv1, Rogues) reduce health
-        health_penalty = min(total_rogue * 20 + total_vulns * 10, 100)
-        NETWORK_HEALTH_INDEX.set(max(100 - health_penalty, 0) if len(all_hosts) > 0 else 100)
-        
-        log.info(f"Cycle completed in {sweep_duration}s. Active: {len(all_hosts)} | Rogues: {total_rogue} | Vulns: {total_vulns}")
-
-        # WMI Thread Auditing: ONLY audit verified / approved hosts
-        for host in all_hosts:
-            host_ip = host["ip"]
-            lab_name = host["lab_name"]
-            is_approved = host.get("is_approved", True)
-            if WINDOWS_PASS and is_approved:
-                threading.Thread(target=audit_windows_pc, args=(host_ip, lab_name, WINDOWS_USER, WINDOWS_PASS, is_approved), daemon=True).start()
-
-        time.sleep(SCAN_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
-    start_monitoring()
+    sys.exit(main())

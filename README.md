@@ -1,131 +1,99 @@
-# Institute Cyber Security SOC & Agentless Network Monitor
+# Monitro - Agentless SOC Network Monitor
 
-An enterprise-grade, lightweight, and 100% agentless network security monitoring, rogue device detection, and endpoint discovery platform designed for educational institutes, corporate labs, and multi-subnet local area networks (100 to 300+ PCs).
+Agentless network security monitoring for institute and campus LANs: asset discovery, rogue-device
+detection, exposure auditing, and optional WMI endpoint threat detection, visualised in Grafana.
+Nothing is installed on monitored hosts and no switch or router changes are needed.
 
-> Zero Software on Client PCs: Monitors Windows workstations across multiple subnets without installing any agent or client software, and without modifying network switches or core routers.
+> **Authorised use only.** Scanning networks you do not own or administer may be illegal. Monitro
+> refuses public IP ranges unless explicitly enabled. Read [SECURITY.md](SECURITY.md) before deploying.
 
----
+## What it does
 
-## Prerequisites (One-Time)
+| Capability | How | Limits |
+| :--- | :--- | :--- |
+| Asset discovery | TCP connect probes, ARP cache, Win32 `SendARP` on the local segment | ICMP is not used; hosts that answer on no probed port and are off-segment are invisible |
+| Device identity | MAC -> vendor via the IEEE registry (`data/oui.csv`), NetBIOS / reverse DNS names | MACs are only visible on the sensor's own L2 segment; everything routed is `unverified` |
+| Rogue devices | MAC compared with `asset_whitelist` | MAC spoofing defeats it; it complements, not replaces, 802.1X/NAC |
+| Exposures | SMBv1 negotiate probe, RDP, VNC, Telnet, FTP, HTTP, databases, RPC | Exposure means "reachable", not "exploitable" |
+| ARP spoofing indicator | One MAC answering for several IPs | Proxy-ARP routers and multi-homed servers can trigger it |
+| Endpoint detections (WMI) | Event 4625 brute force / password spray, offensive tooling by process name, malicious command lines (encoded PowerShell, LSASS dumps, shadow-copy deletion...) | Needs credentials; only runs against whitelisted hosts; not a replacement for EDR/Sysmon |
+| Alerting | `logs/alerts.jsonl` always; Discord / Telegram optionally | Webhooks leave your network - evidence is excluded by default |
 
-Before running the system on a new PC, ensure you have:
-1. **Python 3.10+** (from [python.org](https://www.python.org/downloads/)) - *Make sure to check "Add Python to PATH" during installation.*
-2. **Grafana OSS** (from [grafana.com](https://grafana.com/grafana/download)) - *Standard Windows installer.*
+## Quick start
 
----
+Prerequisites: Windows, Python 3.10+, [Grafana OSS](https://grafana.com/grafana/download). Administrator rights are **not** needed.
 
-## 3-Step Quick Start
+1. **Configure** the subnets you are authorised to monitor in `config.json`. Put anything secret in
+   `config.local.json` (git-ignored) or environment variables - never in `config.json`.
+2. **Set up:** run `setup.bat`. It installs dependencies, downloads Prometheus (SHA-256 verified),
+   fetches the IEEE vendor registry and provisions the Grafana dashboard (it asks for your Grafana
+   credentials, or uses `GRAFANA_TOKEN`).
+3. **Baseline assets:** `python src\agentless_monitor_win.py --export-baseline`, review
+   `asset_baseline.json` line by line, then copy its `asset_whitelist` into `config.local.json`.
+   Until you do, rogue detection and WMI auditing stay off.
+4. **Start:** `start.bat`, then open http://localhost:3000/d/institute-soc-overview. Stop with `stop.bat`.
 
-### Step 1: Customize Your Network (Optional)
-Open `config.json` in any text editor (Notepad, VS Code) and add your IP ranges, lab names, or alert webhooks:
-```json
-{
-  "subnets": {
-    "192.168.1.0/24": "Main Lab",
-    "10.13.109.0/24": "Computer Science Lab"
-  },
-  "asset_whitelist": [
-    "00:15:5d:00:00:01",
-    "34:5a:60:11:22:33"
-  ],
-  "alerts": {
-    "enabled": false,
-    "discord_webhook_url": "https://discord.com/api/webhooks/...",
-    "telegram_bot_token": "",
-    "telegram_chat_id": ""
-  }
-}
-```
-*(If you leave `config.json` untouched, it will automatically detect and scan your current local network).*
+### Optional: endpoint auditing over WMI
 
-### Step 2: Run Setup (First Time Only)
-Double-click `setup.bat` (or right-click and select **Run as Administrator**).
-* Installs required Python libraries.
-* Downloads Prometheus automatically.
-* Automatically imports and deploys the complete Grafana SOC Dashboard.
-
-### Step 3: Start Monitoring
-Right-click `start.bat` and select **Run as Administrator**.
-* Automatically launches the Python Scanner and Prometheus TSDB.
-* Opens your browser directly to the live dashboard:
-  http://localhost:3000/d/institute-soc-overview
-
-### To Stop All Monitoring:
-Double-click `stop.bat` to cleanly shut down all background services.
-
----
-
-## Executive Audit & Compliance Report Generator
-
-To generate an immediate audit report (in Markdown and HTML format):
 ```cmd
-python src\generate_report.py
-```
-This produces `EXECUTIVE_AUDIT_REPORT.md` and `executive_audit_report.html` summarizing all active assets, rogue devices, attack surface exposures, and compliance health.
-
----
-
-## Directory Structure
-
-```
-monitro/
-│
-├── config.json                     # Universal configuration (Subnets, Whitelists, Webhooks)
-├── setup.bat                       # 1-Click Universal Installer & Configurator
-├── start.bat                       # 1-Click Master Launcher (Starts Monitor + Prometheus + Grafana)
-├── stop.bat                        # 1-Click Clean Shutdown
-├── requirements.txt                # Python package dependencies
-├── LICENSE                         # MIT Open Source License
-│
-├── src/                            # Python Source Engines
-│   ├── agentless_monitor_win.py    # Background network scanner, rogue detector & Prometheus exporter
-│   ├── oui_database.py             # IEEE Standards MAC OUI Hardware Vendor Database
-│   ├── threat_intel.py             # MITRE ATT&CK Mapping & CVSS 3.1 Risk Scoring Engine
-│   ├── setup_grafana.py            # Automated Grafana API Dashboard Deployer
-│   ├── generate_report.py          # Executive SOC Compliance & Incident Report Generator
-│   └── soc_dashboard.py            # Standalone FastAPI Cyber Console (Optional port 5000)
-│
-├── prometheus-3.14.0.windows-amd64/ # Standalone Prometheus Server & Config
-│
-└── Documentation
-    ├── README.md                   # System overview, quickstart & features
-    ├── ARCHITECTURE.md             # Technical data flow & metrics dictionary
-    ├── ANALYSIS.md                 # Formal time/space complexity & edge cases analysis
-    └── DEPLOYMENT_GUIDE.md         # Portability guide & troubleshooting
+setx MONITRO_WINDOWS_USER "CORP\svc-monitro-audit"
+setx MONITRO_WINDOWS_PASSWORD "..."
 ```
 
----
+Use a dedicated low-privilege account (see [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md#least-privilege-wmi-account)),
+never a domain admin. Credentials are only sent to hosts whose MAC is on the whitelist.
 
-## Monitored Intelligence & SOC Capabilities
+### Optional: alerts
 
-1. **Master Endpoint & Hardware Directory:**
-   * Real-time discovery of all active PCs across all labs and subnets.
-   * Device IP Address, Hostname, Subnet/Lab, and Hardware MAC Address.
-   * Network Interface Card (NIC) Vendor recognition (Intel, Realtek, Dell, HP, ASUS, VMware, etc.).
-2. **Rogue Device Detection & Whitelisting:**
-   * Flags unauthorized student laptops, mobile phones, or rogue wireless routers connected to lab ports.
-   * Compares active devices against `asset_whitelist` and highlights unauthorized units in red.
-3. **Defensive Vulnerability & Attack Surface Auditing:**
-   * **SMBv1 Dialect Inspection**: Detects legacy SMBv1 on port 445 (MS17-010 exposure).
-   * **RDP Exposure Check**: Flags open RDP port 3389 across the network.
-   * **Cleartext Protocol Check**: Highlights unencrypted HTTP port 80/8080 services.
-   * **RPC/DCOM Mapper**: Tracks endpoint mapper exposure on port 135.
-4. **Automated Incident Webhook Alerts:**
-   * Multi-channel alerts sent asynchronously to Discord Webhooks and Telegram Bots.
-   * Automatic alert cooldown and deduplication prevents notification flooding.
-5. **Cybersecurity & Threat Detection (SOC):**
-   * Authentication Anomalies (Event ID 4625): Tracks failed logon spikes and brute-force attempts per target IP.
-   * Suspicious & Malicious Process Execution: Flags blacklisted binaries (powershell.exe, mimikatz.exe, netcat.exe, tor.exe, psexec.exe, wireshark.exe, nmap.exe, anydesk.exe).
-   * Security Posture Index: Dynamic 0 to 100% computed health rating.
+```cmd
+setx MONITRO_DISCORD_WEBHOOK_URL "https://discord.com/api/webhooks/..."
+```
+and set `"alerts": {"enabled": true}` in `config.local.json`.
 
----
+## Commands
 
-## Web Access URLs
+| Command | Purpose |
+| :--- | :--- |
+| `python src\agentless_monitor_win.py` | Run the monitor and Prometheus exporter (127.0.0.1:8000) |
+| `python src\agentless_monitor_win.py --once` | One sweep, JSON summary to stdout |
+| `python src\agentless_monitor_win.py --export-baseline` | One sweep, write `asset_baseline.json` for review |
+| `python src\generate_report.py` | Markdown + HTML audit report. Exit 0 = fresh, 1 = stale, 2 = no data |
+| `python src\soc_dashboard.py` | Standalone web console on 127.0.0.1:5000 (use *instead of* the monitor) |
+| `python src\setup_grafana.py` | Re-provision the Grafana dashboard |
+| `python -m unittest discover -s tests -t .` | Test suite (`pip install -r requirements-dev.txt` for dashboard tests) |
 
-| Dashboard / Service | Local URL | Network / Remote URL | Description |
-| :--- | :--- | :--- | :--- |
-| **Grafana Enterprise SOC** | `http://localhost:3000` | `http://<YOUR_IP>:3000` | Full analytics, charts, tables & metrics |
-| **Direct Dashboard Link** | `http://localhost:3000/d/institute-soc-overview` | `http://<YOUR_IP>:3000/d/institute-soc-overview` | Primary landing page |
-| **Prometheus Server** | `http://localhost:9090` | `http://<YOUR_IP>:9090` | Metric database & scraper health |
-| **Python Metrics Endpoint**| `http://localhost:8000/metrics` | `http://<YOUR_IP>:8000/metrics` | Raw Prometheus text metrics |
-| **Standalone Web Console** | `http://localhost:5000` | `http://<YOUR_IP>:5000` | Optional zero-Grafana lightweight web UI |
+## Services and exposure
+
+| Service | Address | Exposure |
+| :--- | :--- | :--- |
+| Grafana | `:3000` | The only UI meant for the network. Change the admin password; put HTTPS in front |
+| Prometheus | `127.0.0.1:9090` | Loopback only (no authentication) |
+| Monitor metrics | `127.0.0.1:8000` | Loopback only (contains the full network map) |
+| Standalone console | `127.0.0.1:5000` | Loopback by default; other addresses require credentials |
+
+## Layout
+
+```
+config.json / config.example.json   tracked settings (no secrets) / template for config.local.json
+setup.bat, start.bat, stop.bat      install, launch, stop (tools\stop-monitro.ps1 stops only this folder's processes)
+src/
+  agentless_monitor_win.py          entry point: sweep loop + Prometheus exporter
+  engine.py                         discovery scheduling, asset classification, host views
+  scanner.py                        TCP/ARP/NetBIOS/SMBv1 primitives
+  wmi_audit.py                      WMI endpoint auditing and detection logic
+  threat_intel.py                   exposure/detection catalogs, ATT&CK mapping, risk score, latency anomalies
+  metrics_collector.py              Prometheus collector (series rebuilt every scrape)
+  alerting.py                       JSONL audit log + webhooks
+  oui_database.py                   MAC vendor lookup
+  generate_report.py                executive report
+  soc_dashboard.py                  standalone FastAPI console
+  setup_grafana.py                  Grafana provisioning
+tests/                              unit and socket-level tests
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the data flow and metric dictionary, [ANALYSIS.md](ANALYSIS.md)
+for performance and failure modes, and [SECURITY.md](SECURITY.md) for the threat model.
+
+## License
+
+MIT - see [LICENSE](LICENSE).

@@ -1,18 +1,10 @@
 @echo off
-title Stop Monitoring Engine
+title Monitro - Stop Services
 cd /d "%~dp0"
 
 echo ============================================================
-echo   Stopping Monitro SOC Services...
+echo   Stopping Monitro services started from this folder...
 echo ============================================================
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\stop-monitro.ps1"
 echo.
-
-powershell -Command "Get-NetTCPConnection -LocalPort 8000,9090,5000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }" 2>nul
-
-taskkill /FI "WINDOWTITLE eq Python Security Monitor*" /F /T 2>nul
-taskkill /FI "WINDOWTITLE eq Prometheus Server*" /F /T 2>nul
-taskkill /IM prometheus.exe /F /T 2>nul
-
-echo.
-echo All Monitro monitoring processes have been stopped cleanly.
 pause

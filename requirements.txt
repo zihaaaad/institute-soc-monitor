@@ -1,6 +1,4 @@
-wmi>=1.5.1
 pywin32>=306
 prometheus-client>=0.20.0
-fastapi>=0.100.0
-uvicorn>=0.20.0
-requests>=2.30.0
+fastapi>=0.115.0
+uvicorn>=0.30.0

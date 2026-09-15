@@ -64,6 +64,26 @@ EXPOSURE_CATALOG: dict[str, dict[str, object]] = {
         "tactic": "Lateral Movement",
         "remediation": "Restrict 3389 to a management subnet via Windows Defender Firewall and require NLA.",
     },
+    "VNC-EXPOSURE": {
+        "title": "VNC remote control reachable on TCP/5900",
+        "severity": "MEDIUM",
+        "weight": 6.0,
+        "reference": "CWE-306 (frequently weak or no authentication)",
+        "technique_id": "T1021.005",
+        "technique_name": "Remote Services: VNC",
+        "tactic": "Lateral Movement",
+        "remediation": "Remove VNC or restrict it to a management subnet and enforce strong authentication.",
+    },
+    "DATABASE-EXPOSURE": {
+        "title": "Database listener reachable (MSSQL 1433 / MySQL 3306 / PostgreSQL 5432)",
+        "severity": "MEDIUM",
+        "weight": 5.5,
+        "reference": "CIS Controls v8 12.2",
+        "technique_id": "T1210",
+        "technique_name": "Exploitation of Remote Services",
+        "tactic": "Lateral Movement",
+        "remediation": "Bind the database to localhost or restrict access to application servers only.",
+    },
     "HTTP-CLEARTEXT": {
         "title": "Unencrypted HTTP service on TCP/80 or TCP/8080",
         "severity": "LOW",
@@ -104,6 +124,16 @@ DETECTION_CATALOG: dict[str, dict[str, object]] = {
         "title": "Process on site blacklist",
         "severity": "MEDIUM", "weight": 5.0,
         "technique_id": "N/A", "technique_name": "Site policy violation", "tactic": "Policy",
+    },
+    "CUSTOM-COMMANDLINE": {
+        "title": "Command line matched a site-defined pattern",
+        "severity": "MEDIUM", "weight": 5.0,
+        "technique_id": "T1059", "technique_name": "Command and Scripting Interpreter", "tactic": "Execution",
+    },
+    "ARP-DUPLICATE-MAC": {
+        "title": "One MAC address answers for several IPs (possible ARP spoofing)",
+        "severity": "MEDIUM", "weight": 6.0,
+        "technique_id": "T1557.002", "technique_name": "Adversary-in-the-Middle: ARP Cache Poisoning", "tactic": "Credential Access",
     },
 }
 
@@ -168,6 +198,46 @@ COMMANDLINE_RULES: list[dict[str, object]] = [
 
 def severity_at_least(severity: str, minimum: str) -> bool:
     return SEVERITY_ORDER.get(severity.upper(), 0) >= SEVERITY_ORDER[minimum]
+
+
+def make_detection(detection_id: str, info: dict[str, object], evidence: str = "") -> dict[str, object]:
+    """Normalise a catalog entry into the detection record shared by metrics, alerts and reports."""
+    return {
+        "id": detection_id,
+        "title": str(info.get("title", detection_id)),
+        "severity": str(info.get("severity", "MEDIUM")),
+        "weight": float(info.get("weight", 5.0)),  # type: ignore[arg-type]
+        "technique_id": str(info.get("technique_id", "N/A")),
+        "technique_name": str(info.get("technique_name", "Unknown")),
+        "tactic": str(info.get("tactic", "Unknown")),
+        "evidence": evidence[:500],
+    }
+
+
+def exposure_ids_for_ports(open_ports: Iterable[int], smbv1: bool | None, vuln_config: dict[str, object]) -> list[str]:
+    """Map fingerprinted TCP ports (and the SMBv1 probe result) to exposure findings."""
+    if not vuln_config.get("enabled", True):
+        return []
+    ports = set(open_ports)
+    findings: list[str] = []
+    if smbv1 and vuln_config.get("check_smbv1", True):
+        findings.append("SMBV1-ENABLED")
+    if vuln_config.get("check_cleartext_protocols", True):
+        if 23 in ports:
+            findings.append("TELNET-CLEARTEXT")
+        if 21 in ports:
+            findings.append("FTP-CLEARTEXT")
+        if ports & {80, 8080, 8000, 8888}:
+            findings.append("HTTP-CLEARTEXT")
+    if 3389 in ports and vuln_config.get("check_rdp_exposure", True):
+        findings.append("RDP-EXPOSURE")
+    if 5900 in ports:
+        findings.append("VNC-EXPOSURE")
+    if ports & {1433, 3306, 5432}:
+        findings.append("DATABASE-EXPOSURE")
+    if 135 in ports and vuln_config.get("check_rpc_mapper", True):
+        findings.append("RPC-EXPOSURE")
+    return findings
 
 
 def calculate_endpoint_risk_score(findings_or_weights: Iterable[object], is_rogue: bool = False) -> float:
